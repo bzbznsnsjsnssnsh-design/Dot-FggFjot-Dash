@@ -8,3 +8,64 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface ProcessVideoRequest {
+  /** YouTube video URL */
+  videoUrl: string;
+  /** Start time in seconds */
+  startTime: number;
+  /** TTS model identifier */
+  model: string;
+  /** Voice identifier for the selected model */
+  voice: string;
+  /** Speech speed multiplier (1.0-5.0) */
+  speed: number;
+}
+
+export interface ProcessVideoResponse {
+  jobId: string;
+  status: string;
+  message: string;
+}
+
+export type JobStatusResponseStatus =
+  (typeof JobStatusResponseStatus)[keyof typeof JobStatusResponseStatus];
+
+export const JobStatusResponseStatus = {
+  pending: "pending",
+  processing: "processing",
+  completed: "completed",
+  failed: "failed",
+} as const;
+
+export interface JobStatusResponse {
+  jobId: string;
+  status: JobStatusResponseStatus;
+  progress: string;
+  audioUrl?: string | null;
+  transcript?: string | null;
+  translation?: string | null;
+  error?: string | null;
+  startTime?: number | null;
+}
+
+export interface TtsVoice {
+  id: string;
+  name: string;
+  gender: string;
+}
+
+export interface TtsModel {
+  id: string;
+  name: string;
+  voices: TtsVoice[];
+}
+
+export interface TtsModelsResponse {
+  models: TtsModel[];
+}
+
+export interface ErrorResponse {
+  error: string;
+  message: string;
+}

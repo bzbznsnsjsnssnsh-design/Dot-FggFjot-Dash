@@ -5,18 +5,28 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  ErrorResponse,
+  HealthStatus,
+  JobStatusResponse,
+  ProcessVideoRequest,
+  ProcessVideoResponse,
+  TtsModelsResponse,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -92,6 +102,340 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Extract, transcribe, translate and synthesize speech for a 20-second video segment
+ * @summary Process video segment
+ */
+export const getProcessVideoUrl = () => {
+  return `/api/translate/process`;
+};
+
+export const processVideo = async (
+  processVideoRequest: ProcessVideoRequest,
+  options?: RequestInit,
+): Promise<ProcessVideoResponse> => {
+  return customFetch<ProcessVideoResponse>(getProcessVideoUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(processVideoRequest),
+  });
+};
+
+export const getProcessVideoMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof processVideo>>,
+    TError,
+    { data: BodyType<ProcessVideoRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof processVideo>>,
+  TError,
+  { data: BodyType<ProcessVideoRequest> },
+  TContext
+> => {
+  const mutationKey = ["processVideo"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof processVideo>>,
+    { data: BodyType<ProcessVideoRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return processVideo(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ProcessVideoMutationResult = NonNullable<
+  Awaited<ReturnType<typeof processVideo>>
+>;
+export type ProcessVideoMutationBody = BodyType<ProcessVideoRequest>;
+export type ProcessVideoMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Process video segment
+ */
+export const useProcessVideo = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof processVideo>>,
+    TError,
+    { data: BodyType<ProcessVideoRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof processVideo>>,
+  TError,
+  { data: BodyType<ProcessVideoRequest> },
+  TContext
+> => {
+  return useMutation(getProcessVideoMutationOptions(options));
+};
+
+/**
+ * @summary Get job processing status
+ */
+export const getGetJobStatusUrl = (jobId: string) => {
+  return `/api/translate/status/${jobId}`;
+};
+
+export const getJobStatus = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<JobStatusResponse> => {
+  return customFetch<JobStatusResponse>(getGetJobStatusUrl(jobId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetJobStatusQueryKey = (jobId: string) => {
+  return [`/api/translate/status/${jobId}`] as const;
+};
+
+export const getGetJobStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getJobStatus>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getJobStatus>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetJobStatusQueryKey(jobId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getJobStatus>>> = ({
+    signal,
+  }) => getJobStatus(jobId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!jobId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getJobStatus>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetJobStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getJobStatus>>
+>;
+export type GetJobStatusQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get job processing status
+ */
+
+export function useGetJobStatus<
+  TData = Awaited<ReturnType<typeof getJobStatus>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getJobStatus>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetJobStatusQueryOptions(jobId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get processed audio file
+ */
+export const getGetAudioUrl = (jobId: string) => {
+  return `/api/translate/audio/${jobId}`;
+};
+
+export const getAudio = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<Blob> => {
+  return customFetch<Blob>(getGetAudioUrl(jobId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAudioQueryKey = (jobId: string) => {
+  return [`/api/translate/audio/${jobId}`] as const;
+};
+
+export const getGetAudioQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAudio>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAudio>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAudioQueryKey(jobId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAudio>>> = ({
+    signal,
+  }) => getAudio(jobId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!jobId,
+    ...queryOptions,
+  } as UseQueryOptions<Awaited<ReturnType<typeof getAudio>>, TError, TData> & {
+    queryKey: QueryKey;
+  };
+};
+
+export type GetAudioQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAudio>>
+>;
+export type GetAudioQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get processed audio file
+ */
+
+export function useGetAudio<
+  TData = Awaited<ReturnType<typeof getAudio>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAudio>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAudioQueryOptions(jobId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get available TTS models and voices
+ */
+export const getGetTtsModelsUrl = () => {
+  return `/api/translate/models`;
+};
+
+export const getTtsModels = async (
+  options?: RequestInit,
+): Promise<TtsModelsResponse> => {
+  return customFetch<TtsModelsResponse>(getGetTtsModelsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetTtsModelsQueryKey = () => {
+  return [`/api/translate/models`] as const;
+};
+
+export const getGetTtsModelsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getTtsModels>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getTtsModels>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetTtsModelsQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getTtsModels>>> = ({
+    signal,
+  }) => getTtsModels({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getTtsModels>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetTtsModelsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getTtsModels>>
+>;
+export type GetTtsModelsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get available TTS models and voices
+ */
+
+export function useGetTtsModels<
+  TData = Awaited<ReturnType<typeof getTtsModels>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getTtsModels>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetTtsModelsQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

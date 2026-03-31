@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "مترجم الفيديو"
+version = "1.0.0"
+id = "artifacts/video-translator"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23267
+
+[services.development]
+run = "pnpm --filter @workspace/video-translator run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/video-translator", "run", "build" ]
+publicDir = "artifacts/video-translator/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23267"
+BASE_PATH = "/"

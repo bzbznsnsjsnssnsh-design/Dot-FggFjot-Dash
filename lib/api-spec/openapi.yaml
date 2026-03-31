@@ -1,6 +1,5 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
   description: API specification
@@ -10,6 +9,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: translate
+    description: Video translation operations
 paths:
   /healthz:
     get:
@@ -24,6 +25,97 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /translate/process:
+    post:
+      operationId: processVideo
+      tags: [translate]
+      summary: Process video segment
+      description: Extract, transcribe, translate and synthesize speech for a 20-second video segment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcessVideoRequest"
+      responses:
+        "200":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessVideoResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /translate/status/{jobId}:
+    get:
+      operationId: getJobStatus
+      tags: [translate]
+      summary: Get job processing status
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatusResponse"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /translate/audio/{jobId}:
+    get:
+      operationId: getAudio
+      tags: [translate]
+      summary: Get processed audio file
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audio file
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Audio not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /translate/models:
+    get:
+      operationId: getTtsModels
+      tags: [translate]
+      summary: Get available TTS models and voices
+      responses:
+        "200":
+          description: Models list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TtsModelsResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +126,122 @@ components:
       required:
         - status
 
+    ProcessVideoRequest:
+      type: object
+      properties:
+        videoUrl:
+          type: string
+          description: YouTube video URL
+        startTime:
+          type: number
+          description: Start time in seconds
+        model:
+          type: string
+          description: TTS model identifier
+        voice:
+          type: string
+          description: Voice identifier for the selected model
+        speed:
+          type: number
+          description: Speech speed multiplier (1.0-5.0)
+      required:
+        - videoUrl
+        - startTime
+        - model
+        - voice
+        - speed
+
+    ProcessVideoResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+        message:
+          type: string
+      required:
+        - jobId
+        - status
+        - message
+
+    JobStatusResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        progress:
+          type: string
+        audioUrl:
+          type: string
+          nullable: true
+        transcript:
+          type: string
+          nullable: true
+        translation:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        startTime:
+          type: number
+          nullable: true
+      required:
+        - jobId
+        - status
+        - progress
+
+    TtsVoice:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        gender:
+          type: string
+      required:
+        - id
+        - name
+        - gender
+
+    TtsModel:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        voices:
+          type: array
+          items:
+            $ref: "#/components/schemas/TtsVoice"
+      required:
+        - id
+        - name
+        - voices
+
+    TtsModelsResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/TtsModel"
+      required:
+        - models
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+        - message

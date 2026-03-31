@@ -14,3 +14,65 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Extract, transcribe, translate and synthesize speech for a 20-second video segment
+ * @summary Process video segment
+ */
+export const ProcessVideoBody = zod.object({
+  videoUrl: zod.string().describe("YouTube video URL"),
+  startTime: zod.number().describe("Start time in seconds"),
+  model: zod.string().describe("TTS model identifier"),
+  voice: zod.string().describe("Voice identifier for the selected model"),
+  speed: zod.number().describe("Speech speed multiplier (1.0-5.0)"),
+});
+
+export const ProcessVideoResponse = zod.object({
+  jobId: zod.string(),
+  status: zod.string(),
+  message: zod.string(),
+});
+
+/**
+ * @summary Get job processing status
+ */
+export const GetJobStatusParams = zod.object({
+  jobId: zod.coerce.string(),
+});
+
+export const GetJobStatusResponse = zod.object({
+  jobId: zod.string(),
+  status: zod.enum(["pending", "processing", "completed", "failed"]),
+  progress: zod.string(),
+  audioUrl: zod.string().nullish(),
+  transcript: zod.string().nullish(),
+  translation: zod.string().nullish(),
+  error: zod.string().nullish(),
+  startTime: zod.number().nullish(),
+});
+
+/**
+ * @summary Get processed audio file
+ */
+export const GetAudioParams = zod.object({
+  jobId: zod.coerce.string(),
+});
+
+/**
+ * @summary Get available TTS models and voices
+ */
+export const GetTtsModelsResponse = zod.object({
+  models: zod.array(
+    zod.object({
+      id: zod.string(),
+      name: zod.string(),
+      voices: zod.array(
+        zod.object({
+          id: zod.string(),
+          name: zod.string(),
+          gender: zod.string(),
+        }),
+      ),
+    }),
+  ),
+});

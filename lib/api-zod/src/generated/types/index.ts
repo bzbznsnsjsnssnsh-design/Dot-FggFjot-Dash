@@ -6,4 +6,12 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./errorResponse";
 export * from "./healthStatus";
+export * from "./jobStatusResponse";
+export * from "./jobStatusResponseStatus";
+export * from "./processVideoRequest";
+export * from "./processVideoResponse";
+export * from "./ttsModel";
+export * from "./ttsModelsResponse";
+export * from "./ttsVoice";

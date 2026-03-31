@@ -94,3 +94,45 @@ Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHea
 ### `scripts` (`@workspace/scripts`)
 
 Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+
+---
+
+## مترجم الفيديو — Video Translator App
+
+### Overview
+
+A YouTube video dubbing/translation app that translates videos to Arabic in real-time.
+
+### Architecture
+
+- **Frontend**: React + Vite (`artifacts/video-translator/`) — Arabic RTL UI with dark theme (Cairo/Tajawal fonts), react-youtube player, framer-motion animations
+- **Backend**: Express API server (`artifacts/api-server/`) — processing pipeline: yt-dlp → ffmpeg → whisper → GPT translate → TTS
+
+### Translation Pipeline (per 20-second segment)
+
+1. `yt-dlp` extracts direct audio stream URL from YouTube
+2. `ffmpeg` seeks to startTime and extracts 20 seconds at 16kHz mono
+3. `ffmpeg` cleans audio (highpass, noise reduction, loudnorm)
+4. **Whisper** (`whisper-1`) transcribes audio to text
+5. **GPT** (`gpt-4o-mini`) translates text to Arabic
+6. **TTS** generates Arabic speech
+
+### TTS Providers (Free)
+
+- **Microsoft Edge TTS** (`msedge-tts` npm package): 7 Arabic voices (Saudi, Egyptian, UAE) + Remy Multilingual
+- **Google Translate TTS** (unofficial HTTP API): text split at 190 chars, merged with ffmpeg
+
+### Key Files
+
+- `artifacts/api-server/src/routes/translate/processor.ts` — full pipeline logic
+- `artifacts/api-server/src/routes/translate/index.ts` — route handlers
+- `artifacts/api-server/src/routes/translate/jobs.ts` — in-memory job store (100 max, 30min TTL)
+- `artifacts/video-translator/src/pages/Home.tsx` — main UI page
+- `artifacts/video-translator/src/components/pipeline-bar.tsx` — background processing indicator
+- `artifacts/video-translator/src/components/processing-overlay.tsx` — blocking overlay during first segment
+
+### AI Integration
+
+Uses Replit AI Integrations for OpenAI (no user API key needed, billed to Replit credits):
+- `@workspace/integrations-openai-ai-server` — server-side OpenAI client
+- whisper-1 for transcription, gpt-4o-mini for translation
