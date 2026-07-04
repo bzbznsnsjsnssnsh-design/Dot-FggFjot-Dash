@@ -58,11 +58,12 @@ async function downloadAudioSegment(
   startTime: number,
   outputPath: string
 ): Promise<void> {
-  // Get direct audio stream URL
+  // Get direct audio stream URL — use ios client to bypass SABR streaming restrictions
   const { stdout: streamUrl } = await execFileAsync("yt-dlp", [
     "-f", "bestaudio[ext=m4a]/bestaudio/best",
     "--get-url",
     "--no-playlist",
+    "--extractor-args", "youtube:player_client=ios",
     videoUrl,
   ]);
 
