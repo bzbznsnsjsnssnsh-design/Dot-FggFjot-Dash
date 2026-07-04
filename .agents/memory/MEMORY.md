@@ -1,0 +1,3 @@
+- [msedge-tts toFile API](msedge-tts-tofile.md) — v2 toFile() takes a DIRECTORY, writes audio.mp3 inside it (not a file path)
+- [yt-dlp on GCP IPs](ytdlp-gcp.md) — --download-sections causes 403 on GCP; must download full audio first then ffmpeg-cut locally
+- [Video Translator STT model](vt-stt-model.md) — only gpt-4o-mini-transcribe works via Replit AI Integrations (whisper-1 unsupported)

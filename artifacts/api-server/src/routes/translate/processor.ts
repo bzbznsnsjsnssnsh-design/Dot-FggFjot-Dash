@@ -10,6 +10,8 @@ import { updateJob } from "./jobs.js";
 
 const execFileAsync = promisify(execFile);
 
+const SEGMENT_DURATION = 20;
+
 interface ProcessOptions {
   jobId: string;
   videoUrl: string;
@@ -19,12 +21,17 @@ interface ProcessOptions {
   speed: number;
 }
 
-// Audio file paths stored by jobId
+// Output audio paths stored by jobId
 const audioFiles = new Map<string, string>();
 
 export function getAudioPath(jobId: string): string | null {
   return audioFiles.get(jobId) ?? null;
 }
+
+// Full audio cache: videoUrl → local mp3 path (downloaded once, reused for all segments)
+const fullAudioCache = new Map<string, string>();
+// In-flight downloads: videoUrl → Promise (prevents duplicate downloads)
+const fullAudioInFlight = new Map<string, Promise<string>>();
 
 export const TTS_MODELS = [
   {
@@ -50,35 +57,61 @@ export const TTS_MODELS = [
 ];
 
 /**
- * Step 1: Get the direct audio stream URL from YouTube using yt-dlp
- * Then use ffmpeg to extract exactly 20 seconds starting from startTime
+ * Download the full audio of a YouTube video, caching it so multiple segments
+ * from the same video share one download. Uses android client + formats=missing_pot
+ * which is the only reliable approach on server IPs without a GVS PO Token.
+ */
+async function getOrDownloadFullAudio(videoUrl: string): Promise<string> {
+  if (fullAudioCache.has(videoUrl)) {
+    return fullAudioCache.get(videoUrl)!;
+  }
+  if (fullAudioInFlight.has(videoUrl)) {
+    return fullAudioInFlight.get(videoUrl)!;
+  }
+
+  const promise = (async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vt-full-"));
+    const outTemplate = join(dir, "audio.%(ext)s");
+    const outPath = join(dir, "audio.mp3");
+
+    await execFileAsync("yt-dlp", [
+      "--extractor-args", "youtube:player_client=android;formats=missing_pot",
+      "-f", "18/bestaudio[ext=m4a]/bestaudio",
+      "-x", "--audio-format", "mp3", "--audio-quality", "5",
+      "--no-playlist",
+      "-o", outTemplate,
+      videoUrl,
+    ]);
+
+    if (!existsSync(outPath)) {
+      throw new Error("yt-dlp لم يُنشئ ملف الصوت الكامل");
+    }
+
+    fullAudioCache.set(videoUrl, outPath);
+    fullAudioInFlight.delete(videoUrl);
+    return outPath;
+  })();
+
+  fullAudioInFlight.set(videoUrl, promise);
+  return promise;
+}
+
+/**
+ * Step 1: Cut a 20-second segment from the cached full audio using ffmpeg.
+ * Only downloads the full audio once per video URL.
  */
 async function downloadAudioSegment(
   videoUrl: string,
   startTime: number,
   outputPath: string
 ): Promise<void> {
-  // Get direct audio stream URL — use ios client to bypass SABR streaming restrictions
-  const { stdout: streamUrl } = await execFileAsync("yt-dlp", [
-    "-f", "bestaudio[ext=m4a]/bestaudio/best",
-    "--get-url",
-    "--no-playlist",
-    "--extractor-args", "youtube:player_client=ios",
-    videoUrl,
-  ]);
+  const fullAudioPath = await getOrDownloadFullAudio(videoUrl);
 
-  const cleanUrl = streamUrl.trim();
-
-  if (!cleanUrl || !cleanUrl.startsWith("http")) {
-    throw new Error("لم يتمكن من الحصول على رابط الصوت من يوتيوب");
-  }
-
-  // Use ffmpeg to seek to startTime and extract 20 seconds directly from the stream
+  // Cut the 20-second segment from the local full audio file
   await execFileAsync("ffmpeg", [
-    "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "-ss", String(startTime),
-    "-i", cleanUrl,
-    "-t", "20",
+    "-i", fullAudioPath,
+    "-t", String(SEGMENT_DURATION + 2),
     "-vn",
     "-ar", "16000",
     "-ac", "1",
@@ -87,6 +120,10 @@ async function downloadAudioSegment(
     "-y",
     outputPath,
   ]);
+
+  if (!existsSync(outputPath)) {
+    throw new Error("ffmpeg لم يُنشئ ملف المقطع");
+  }
 }
 
 async function cleanAudioWithFfmpeg(inputPath: string, outputPath: string): Promise<void> {
@@ -107,9 +144,9 @@ async function cleanAudioWithFfmpeg(inputPath: string, outputPath: string): Prom
 
 async function transcribeAudio(audioPath: string): Promise<string> {
   const audioStream = createReadStream(audioPath);
-  // Use the cheapest whisper model
+  // gpt-4o-mini-transcribe is the supported STT model via Replit AI Integrations
   const transcription = await openai.audio.transcriptions.create({
-    model: "whisper-1",
+    model: "gpt-4o-mini-transcribe",
     file: audioStream,
     response_format: "json",
   });
@@ -135,6 +172,8 @@ async function translateToArabic(text: string): Promise<string> {
 
 /**
  * Generate speech using Microsoft Edge TTS (free, via msedge-tts npm package)
+ * NOTE: msedge-tts v2 toFile() expects a DIRECTORY path, not a file path.
+ * It writes the audio to {dir}/audio.mp3 internally.
  */
 async function generateEdgeTTS(
   text: string,
@@ -146,13 +185,18 @@ async function generateEdgeTTS(
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-  const rawPath = outputPath.replace(".mp3", "_raw.mp3");
-  await tts.toFile(rawPath, text);
+  // msedge-tts toFile() takes a directory; it writes audio.mp3 inside it
+  const ttsDir = await mkdtemp(join(tmpdir(), "vt-tts-"));
+  await tts.toFile(ttsDir, text);
+  const rawPath = join(ttsDir, "audio.mp3");
+
+  if (!existsSync(rawPath)) {
+    throw new Error(`msedge-tts لم يُنشئ ملف الصوت في ${rawPath}`);
+  }
 
   // Apply speed adjustment with ffmpeg
   const ffmpegSpeed = Math.min(2.0, Math.max(0.5, speed));
   if (Math.abs(ffmpegSpeed - 1.0) < 0.05) {
-    // No speed change needed, just copy
     await execFileAsync("ffmpeg", ["-i", rawPath, "-acodec", "libmp3lame", "-q:a", "3", "-y", outputPath]);
   } else {
     await execFileAsync("ffmpeg", [
@@ -295,8 +339,14 @@ export async function processVideoSegment(options: ProcessOptions): Promise<void
   const outputPath = join(tmpDir, "output.mp3");
 
   try {
-    // Step 1: Download audio segment
-    updateJob(jobId, { status: "processing", progress: "جاري تنزيل مقطع الصوت..." });
+    // Step 1: Download full audio (cached) then cut the segment
+    const isFirstDownload = !fullAudioCache.has(videoUrl) && !fullAudioInFlight.has(videoUrl);
+    updateJob(jobId, {
+      status: "processing",
+      progress: isFirstDownload
+        ? "جاري تنزيل الصوت من يوتيوب... (مرة واحدة فقط)"
+        : "جاري استخراج مقطع الصوت..."
+    });
     await downloadAudioSegment(videoUrl, startTime, rawAudioPath);
 
     // Step 2: Clean audio
