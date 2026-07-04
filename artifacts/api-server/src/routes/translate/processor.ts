@@ -27,10 +27,11 @@ export function getAudioPath(jobId: string): string | null {
   return audioFiles.get(jobId) ?? null;
 }
 
-// Full audio cache: videoUrl → local mp3 path (downloaded once, reused for all segments)
-const fullAudioCache = new Map<string, string>();
-// In-flight downloads: videoUrl → Promise (prevents duplicate downloads)
-const fullAudioInFlight = new Map<string, Promise<string>>();
+// Direct stream URL cache: videoUrl → CDN URL (yt-dlp fetches once, ffmpeg uses directly)
+// YouTube CDN URLs expire after ~6 hours; we evict after 5h to be safe.
+const directUrlCache = new Map<string, string>();
+// In-flight URL fetches: prevents duplicate yt-dlp calls for the same video
+const directUrlInFlight = new Map<string, Promise<string>>();
 
 export const TTS_MODELS = [
   {
@@ -56,60 +57,56 @@ export const TTS_MODELS = [
 ];
 
 /**
- * Download the full audio of a YouTube video, caching it so multiple segments
- * from the same video share one download. Uses android client + formats=missing_pot
- * which is the only reliable approach on server IPs without a GVS PO Token.
+ * Get the direct CDN URL for a YouTube video using yt-dlp --get-url.
+ * Result is cached per videoUrl and evicted after 5 hours (CDN URLs expire ~6h).
+ * Concurrent requests for the same URL share one yt-dlp call.
  */
-async function getOrDownloadFullAudio(videoUrl: string): Promise<string> {
-  if (fullAudioCache.has(videoUrl)) {
-    return fullAudioCache.get(videoUrl)!;
+async function getDirectUrl(videoUrl: string): Promise<string> {
+  if (directUrlCache.has(videoUrl)) {
+    return directUrlCache.get(videoUrl)!;
   }
-  if (fullAudioInFlight.has(videoUrl)) {
-    return fullAudioInFlight.get(videoUrl)!;
+  if (directUrlInFlight.has(videoUrl)) {
+    return directUrlInFlight.get(videoUrl)!;
   }
 
   const promise = (async () => {
-    const dir = await mkdtemp(join(tmpdir(), "vt-full-"));
-    const outTemplate = join(dir, "audio.%(ext)s");
-    const outPath = join(dir, "audio.mp3");
-
-    await execFileAsync("yt-dlp", [
+    const { stdout } = await execFileAsync("yt-dlp", [
       "--extractor-args", "youtube:player_client=android;formats=missing_pot",
       "-f", "18/bestaudio[ext=m4a]/bestaudio",
-      "-x", "--audio-format", "mp3", "--audio-quality", "5",
+      "--get-url",
       "--no-playlist",
-      "-o", outTemplate,
       videoUrl,
     ]);
+    const cdnUrl = stdout.trim().split("\n")[0];
+    if (!cdnUrl) throw new Error("yt-dlp لم يُعط رابطاً مباشراً");
 
-    if (!existsSync(outPath)) {
-      throw new Error("yt-dlp لم يُنشئ ملف الصوت الكامل");
-    }
-
-    fullAudioCache.set(videoUrl, outPath);
-    fullAudioInFlight.delete(videoUrl);
-    return outPath;
+    directUrlCache.set(videoUrl, cdnUrl);
+    directUrlInFlight.delete(videoUrl);
+    // Evict after 5 hours before the URL expires
+    setTimeout(() => directUrlCache.delete(videoUrl), 5 * 60 * 60 * 1000);
+    return cdnUrl;
   })();
 
-  fullAudioInFlight.set(videoUrl, promise);
+  directUrlInFlight.set(videoUrl, promise);
   return promise;
 }
 
 /**
- * Step 1: Cut a 20-second segment from the cached full audio using ffmpeg.
- * Only downloads the full audio once per video URL.
+ * Download only the needed 20-second segment using ffmpeg directly from the CDN URL.
+ * Uses the Android user-agent so YouTube CDN accepts the request.
+ * No full-video download — seeks directly to startTime via HTTP range requests.
  */
 async function downloadAudioSegment(
   videoUrl: string,
   startTime: number,
   outputPath: string
 ): Promise<void> {
-  const fullAudioPath = await getOrDownloadFullAudio(videoUrl);
+  const cdnUrl = await getDirectUrl(videoUrl);
 
-  // Cut the 20-second segment from the local full audio file
   await execFileAsync("ffmpeg", [
+    "-user_agent", "com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip",
     "-ss", String(startTime),
-    "-i", fullAudioPath,
+    "-i", cdnUrl,
     "-t", String(SEGMENT_DURATION + 2),
     "-vn",
     "-ar", "16000",
@@ -315,13 +312,13 @@ export async function processVideoSegment(options: ProcessOptions): Promise<void
   const outputPath = join(tmpDir, "output.mp3");
 
   try {
-    // Step 1: Download full audio (cached) then cut the segment
-    const isFirstDownload = !fullAudioCache.has(videoUrl) && !fullAudioInFlight.has(videoUrl);
+    // Step 1: Get CDN URL (once per video) then download only the needed segment
+    const needsUrlFetch = !directUrlCache.has(videoUrl) && !directUrlInFlight.has(videoUrl);
     updateJob(jobId, {
       status: "processing",
-      progress: isFirstDownload
-        ? "جاري تنزيل الصوت من يوتيوب... (مرة واحدة فقط)"
-        : "جاري استخراج مقطع الصوت..."
+      progress: needsUrlFetch
+        ? "جاري الحصول على رابط الصوت من يوتيوب..."
+        : "جاري تنزيل مقطع الصوت..."
     });
     await downloadAudioSegment(videoUrl, startTime, rawAudioPath);
 

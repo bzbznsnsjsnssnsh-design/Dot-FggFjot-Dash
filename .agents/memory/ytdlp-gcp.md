@@ -1,31 +1,31 @@
 ---
-name: yt-dlp on GCP IPs — full download required
-description: --download-sections fails with 403 on Google Cloud IPs; must download full audio and ffmpeg-cut locally
+name: yt-dlp on GCP IPs — segment download approach
+description: Correct way to download only needed audio segment on GCP/Replit servers
 ---
 
-**Rule:** Never use `--download-sections` with yt-dlp on Replit (GCP IPs). Instead, download the full audio to a local file, then use ffmpeg to seek-and-cut.
+**Rule:** Never use `--download-sections` on GCP IPs — ffmpeg's direct HTTP requests to YouTube CDN get 403. Never download full audio (too slow for long videos). Instead: use `yt-dlp --get-url` to get the CDN URL, then use `ffmpeg` with the Android user-agent to download only the needed segment.
 
-**Why:** `--download-sections` internally passes the YouTube CDN URL directly to ffmpeg for HTTP range requests. YouTube CDN returns 403 when ffmpeg (not yt-dlp) makes the request from a GCP IP — yt-dlp's android client auth is not forwarded. Full download via yt-dlp native downloader works because yt-dlp handles all authentication headers itself.
+**Why:** `--download-sections` passes the CDN URL to ffmpeg without yt-dlp's auth headers → 403. Full download is impractical for videos > 1 hour. The CDN URL from `--get-url` combined with the Android user-agent header is what YouTube CDN actually checks — and it works from GCP IPs.
 
 **How to apply:**
 ```typescript
-// Cache full audio per video URL (downloads once, reused for all segments)
-const fullAudioCache = new Map<string, string>();
-
-// yt-dlp: full download
-await execFileAsync("yt-dlp", [
+// Step 1: Get CDN URL once per video (cached 5h, CDN URLs expire ~6h)
+const { stdout } = await execFileAsync("yt-dlp", [
   "--extractor-args", "youtube:player_client=android;formats=missing_pot",
   "-f", "18/bestaudio[ext=m4a]/bestaudio",
-  "-x", "--audio-format", "mp3", "--audio-quality", "5",
-  "--no-playlist", "-o", outTemplate, videoUrl,
+  "--get-url", "--no-playlist", videoUrl,
 ]);
+const cdnUrl = stdout.trim().split("\n")[0];
 
-// ffmpeg: local seek-and-cut (no network)
+// Step 2: ffmpeg downloads ONLY the needed segment with android user-agent
 await execFileAsync("ffmpeg", [
-  "-ss", String(startTime), "-i", fullAudioPath,
-  "-t", String(SEGMENT_DURATION + 2), "-vn", "-ar", "16000", "-ac", "1",
-  "-acodec", "libmp3lame", "-q:a", "3", "-y", segmentPath,
+  "-user_agent", "com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip",
+  "-ss", String(startTime),
+  "-i", cdnUrl,
+  "-t", String(SEGMENT_DURATION + 2),
+  "-vn", "-ar", "16000", "-ac", "1",
+  "-acodec", "libmp3lame", "-q:a", "3", "-y", outputPath,
 ]);
 ```
 
-**Performance:** First segment ~24s (includes full download ~6s for 38MB); subsequent segments ~10s (cached audio, only ffmpeg + transcription + translation + TTS).
+**Performance:** First segment ~12s (includes yt-dlp URL fetch ~2s + ffmpeg download ~2s + transcription + translation + TTS). Subsequent segments ~10s (CDN URL cached, only ffmpeg segment + pipeline).
