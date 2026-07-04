@@ -18,7 +18,6 @@ interface ProcessOptions {
   startTime: number;
   model: string;
   voice: string;
-  speed: number;
 }
 
 // Output audio paths stored by jobId
@@ -174,11 +173,11 @@ async function translateToArabic(text: string): Promise<string> {
  * Generate speech using Microsoft Edge TTS (free, via msedge-tts npm package)
  * NOTE: msedge-tts v2 toFile() expects a DIRECTORY path, not a file path.
  * It writes the audio to {dir}/audio.mp3 internally.
+ * Speed is NOT applied here — caller applies auto-calculated atempo.
  */
 async function generateEdgeTTS(
   text: string,
   voice: string,
-  speed: number,
   outputPath: string
 ): Promise<void> {
   const { MsEdgeTTS, OUTPUT_FORMAT } = await import("msedge-tts");
@@ -194,21 +193,7 @@ async function generateEdgeTTS(
     throw new Error(`msedge-tts لم يُنشئ ملف الصوت في ${rawPath}`);
   }
 
-  // Apply speed adjustment with ffmpeg
-  const ffmpegSpeed = Math.min(2.0, Math.max(0.5, speed));
-  if (Math.abs(ffmpegSpeed - 1.0) < 0.05) {
-    await execFileAsync("ffmpeg", ["-i", rawPath, "-acodec", "libmp3lame", "-q:a", "3", "-y", outputPath]);
-  } else {
-    await execFileAsync("ffmpeg", [
-      "-i", rawPath,
-      "-af", `atempo=${ffmpegSpeed}`,
-      "-acodec", "libmp3lame",
-      "-q:a", "3",
-      "-y",
-      outputPath,
-    ]);
-  }
-
+  await execFileAsync("ffmpeg", ["-i", rawPath, "-acodec", "libmp3lame", "-q:a", "3", "-y", outputPath]);
   try { await unlink(rawPath); } catch { /* ignore */ }
 }
 
@@ -244,11 +229,11 @@ function splitTextIntoChunks(text: string, maxLen = 190): string[] {
 
 /**
  * Generate speech using Google Translate TTS (free, unofficial API)
+ * Speed is NOT applied here — caller applies auto-calculated atempo.
  */
 async function generateGoogleTTS(
   text: string,
   lang: string,
-  speed: number,
   outputPath: string
 ): Promise<void> {
   const chunks = splitTextIntoChunks(text, 190);
@@ -276,62 +261,53 @@ async function generateGoogleTTS(
     tmpFiles.push(tmpFile);
   }
 
-  // Merge chunks if more than one
-  let rawPath: string;
+  // Merge chunks into outputPath
   if (tmpFiles.length === 1) {
-    rawPath = tmpFiles[0];
+    await execFileAsync("ffmpeg", ["-i", tmpFiles[0], "-acodec", "libmp3lame", "-q:a", "3", "-y", outputPath]);
+    await unlink(tmpFiles[0]);
   } else {
-    rawPath = outputPath.replace(".mp3", "_raw.mp3");
     const listPath = outputPath.replace(".mp3", "_list.txt");
     await writeFile(listPath, tmpFiles.map(f => `file '${f}'`).join("\n"));
-    await execFileAsync("ffmpeg", ["-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-y", rawPath]);
+    await execFileAsync("ffmpeg", ["-f", "concat", "-safe", "0", "-i", listPath, "-acodec", "libmp3lame", "-q:a", "3", "-y", outputPath]);
     await unlink(listPath);
     for (const f of tmpFiles) { try { await unlink(f); } catch { /* ignore */ } }
-  }
-
-  // Apply speed adjustment
-  const ffmpegSpeed = Math.min(2.0, Math.max(0.5, speed));
-  if (Math.abs(ffmpegSpeed - 1.0) < 0.05) {
-    await execFileAsync("ffmpeg", ["-i", rawPath, "-acodec", "libmp3lame", "-q:a", "3", "-y", outputPath]);
-  } else {
-    await execFileAsync("ffmpeg", [
-      "-i", rawPath,
-      "-af", `atempo=${ffmpegSpeed}`,
-      "-acodec", "libmp3lame",
-      "-q:a", "3",
-      "-y",
-      outputPath,
-    ]);
-  }
-
-  if (rawPath !== outputPath) {
-    try { await unlink(rawPath); } catch { /* ignore */ }
   }
 }
 
 /**
- * Main dispatcher: choose TTS provider based on model ID
+ * Measure audio duration in seconds using ffprobe.
+ */
+async function getAudioDuration(filePath: string): Promise<number> {
+  const { stdout } = await execFileAsync("ffprobe", [
+    "-v", "quiet",
+    "-show_entries", "format=duration",
+    "-of", "csv=p=0",
+    filePath,
+  ]);
+  return parseFloat(stdout.trim()) || SEGMENT_DURATION;
+}
+
+/**
+ * Main dispatcher: choose TTS provider based on model ID.
+ * Speed is NOT applied — caller measures duration and applies atempo.
  */
 async function generateSpeech(
   text: string,
   modelId: string,
   voiceId: string,
-  speed: number,
   outputPath: string
 ): Promise<void> {
   if (modelId === "microsoft-edge") {
-    await generateEdgeTTS(text, voiceId, speed, outputPath);
+    await generateEdgeTTS(text, voiceId, outputPath);
   } else if (modelId === "google-translate") {
-    // voiceId is the language code (e.g. "ar")
-    await generateGoogleTTS(text, voiceId, speed, outputPath);
+    await generateGoogleTTS(text, voiceId, outputPath);
   } else {
-    // Fallback to Edge TTS with a default Arabic voice
-    await generateEdgeTTS(text, "ar-SA-HamedNeural", speed, outputPath);
+    await generateEdgeTTS(text, "ar-SA-HamedNeural", outputPath);
   }
 }
 
 export async function processVideoSegment(options: ProcessOptions): Promise<void> {
-  const { jobId, videoUrl, startTime, model, voice, speed } = options;
+  const { jobId, videoUrl, startTime, model, voice } = options;
 
   const tmpDir = await mkdtemp(join(tmpdir(), "vt-"));
   const rawAudioPath = join(tmpDir, "raw.mp3");
@@ -367,13 +343,32 @@ export async function processVideoSegment(options: ProcessOptions): Promise<void
     const translation = await translateToArabic(transcript);
     updateJob(jobId, { translation });
 
-    // Step 5: Generate Arabic speech
+    // Step 5: Generate Arabic speech at natural speed
     updateJob(jobId, { progress: "جاري توليد الصوت العربي..." });
-    await generateSpeech(translation, model, voice, speed, outputPath);
+    const ttsRawPath = join(tmpDir, "tts_raw.mp3");
+    await generateSpeech(translation, model, voice, ttsRawPath);
+
+    // Step 6: Auto-calculate speed — cap atempo at 1.7, slow video if needed
+    const ttsDuration = await getAudioDuration(ttsRawPath);
+    const neededSpeed = ttsDuration / SEGMENT_DURATION;
+    const atempo = Math.min(1.7, Math.max(1.0, neededSpeed));
+    const videoRate = neededSpeed <= 1.7 ? 1.0 : parseFloat((1.7 / neededSpeed).toFixed(3));
+
+    if (atempo > 1.05) {
+      await execFileAsync("ffmpeg", [
+        "-i", ttsRawPath,
+        "-af", `atempo=${atempo.toFixed(3)}`,
+        "-acodec", "libmp3lame", "-q:a", "3",
+        "-y", outputPath,
+      ]);
+      await unlink(ttsRawPath);
+    } else {
+      await rename(ttsRawPath, outputPath);
+    }
 
     // Store audio path and mark complete
     audioFiles.set(jobId, outputPath);
-    updateJob(jobId, { status: "completed", progress: "✅ اكتمل المقطع" });
+    updateJob(jobId, { status: "completed", progress: "✅ اكتمل المقطع", videoRate });
 
     logger.info({ jobId, startTime }, "Segment processed successfully");
   } catch (err) {

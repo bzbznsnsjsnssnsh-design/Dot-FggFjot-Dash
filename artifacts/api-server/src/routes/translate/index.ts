@@ -21,7 +21,7 @@ router.post("/translate/process", async (req, res) => {
     return;
   }
 
-  const { videoUrl, startTime, model, voice, speed } = parsed.data;
+  const { videoUrl, startTime, model, voice } = parsed.data;
 
   const job = createJob(startTime);
 
@@ -31,7 +31,6 @@ router.post("/translate/process", async (req, res) => {
     startTime,
     model,
     voice,
-    speed,
   }).catch(() => {});
 
   res.json({
@@ -63,6 +62,7 @@ router.get("/translate/status/:jobId", (req, res) => {
     translation: job.translation,
     error: job.error,
     startTime: job.startTime,
+    videoRate: job.videoRate ?? 1.0,
   });
 });
 

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import YouTube from 'react-youtube';
-import { Play, Youtube, Settings, Wand2, RefreshCcw } from 'lucide-react';
+import { Play, Youtube, Settings, Wand2, RefreshCcw, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { useToast } from '@/hooks/use-toast';
@@ -11,7 +11,6 @@ import { PipelineBar } from '@/components/pipeline-bar';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Slider } from '@/components/ui/slider';
 import {
   Select,
   SelectContent,
@@ -23,12 +22,17 @@ import { Card } from '@/components/ui/card';
 
 const SEGMENT_DURATION = 20;
 const POLL_INTERVAL = 1500;
+const MAX_ATEMPO = 1.7;
+const OFFSET_STEP = 0.1;
+const OFFSET_MIN = -2.0;
+const OFFSET_MAX = 2.0;
 
 interface SegmentJob {
   jobId: string;
   status: 'processing' | 'completed' | 'failed';
   audioUrl: string | null;
   progress: string;
+  videoRate: number;
 }
 
 function formatTime(secs: number) {
@@ -37,11 +41,11 @@ function formatTime(secs: number) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-async function requestSegment(videoUrl: string, startTime: number, model: string, voice: string, speed: number): Promise<string> {
+async function requestSegment(videoUrl: string, startTime: number, model: string, voice: string): Promise<string> {
   const res = await fetch('/api/translate/process', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ videoUrl, startTime, model, voice, speed }),
+    body: JSON.stringify({ videoUrl, startTime, model, voice, speed: 1.0 }),
   });
   const data = await res.json();
   return data.jobId as string;
@@ -57,10 +61,16 @@ async function pollJob(
     const data = await res.json();
     onProgress(data.progress || '');
     if (data.status === 'completed') {
-      return { jobId, status: 'completed', audioUrl: `/api/translate/audio/${jobId}`, progress: data.progress };
+      return {
+        jobId,
+        status: 'completed',
+        audioUrl: `/api/translate/audio/${jobId}`,
+        progress: data.progress,
+        videoRate: data.videoRate ?? 1.0,
+      };
     }
     if (data.status === 'failed') {
-      return { jobId, status: 'failed', audioUrl: null, progress: data.progress };
+      return { jobId, status: 'failed', audioUrl: null, progress: data.progress, videoRate: 1.0 };
     }
     await new Promise<void>(r => {
       const t = setTimeout(r, POLL_INTERVAL);
@@ -80,10 +90,11 @@ export default function Home() {
   const isSeekingRef = useRef(false);
   const isSyncingRef = useRef(false);
   const activeSegmentKeyRef = useRef(0);
+  const audioOffsetRef = useRef(0);
 
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedVoice, setSelectedVoice] = useState('');
-  const [speed, setSpeed] = useState(1.0);
+  const [audioOffset, setAudioOffset] = useState(0.0);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
@@ -103,6 +114,9 @@ export default function Home() {
   const { data: modelsData, isLoading: isLoadingModels } = useGetTtsModels();
 
   const normalizeStart = (t: number) => Math.floor(t / SEGMENT_DURATION) * SEGMENT_DURATION;
+
+  // Keep ref in sync with state (for use inside closures)
+  useEffect(() => { audioOffsetRef.current = audioOffset; }, [audioOffset]);
 
   // Set defaults
   useEffect(() => {
@@ -149,7 +163,7 @@ export default function Home() {
       setPipelineProgress('جاري استخراج الصوت...');
     }
 
-    const jobId = await requestSegment(url, key, selectedModel, selectedVoice, speed);
+    const jobId = await requestSegment(url, key, selectedModel, selectedVoice);
 
     const job = await pollJob(jobId, (p) => {
       onProgress?.(p);
@@ -165,7 +179,7 @@ export default function Home() {
     }
 
     return job;
-  }, [url, selectedModel, selectedVoice, speed]);
+  }, [url, selectedModel, selectedVoice]);
 
   const startChain = useCallback(async (fromSegment: number, signal: AbortSignal) => {
     let current = normalizeStart(fromSegment);
@@ -188,6 +202,47 @@ export default function Home() {
       });
     }
   }, [fetchSegment]);
+
+  /**
+   * Play audio + video in sync, applying audioOffset and videoRate.
+   * offset > 0: delay audio (video starts first)
+   * offset < 0: delay video (audio starts first)
+   */
+  const playSynced = useCallback((job: SegmentJob, key: number) => {
+    if (!audioRef.current || !job.audioUrl) return;
+
+    const offset = audioOffsetRef.current;
+    const rate = job.videoRate ?? 1.0;
+
+    isSyncingRef.current = true;
+    ytPlayerRef.current?.seekTo(key, true);
+    audioRef.current.src = job.audioUrl;
+    audioRef.current.load();
+
+    setTimeout(() => {
+      if (!audioRef.current) return;
+      audioRef.current.currentTime = 0;
+
+      if (offset >= 0) {
+        // Video first, then audio after offset ms
+        ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
+        ytPlayerRef.current?.playVideo();
+        setTimeout(() => { audioRef.current?.play().catch(() => {}); }, offset * 1000);
+      } else {
+        // Audio first, then video after |offset| ms
+        audioRef.current.play().catch(() => {});
+        setTimeout(() => {
+          ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
+          ytPlayerRef.current?.playVideo();
+        }, -offset * 1000);
+      }
+
+      activeSegmentKeyRef.current = key;
+      lastTimeRef.current = key;
+      setIsPlaying(true);
+      setTimeout(() => { isSyncingRef.current = false; }, 800);
+    }, 600);
+  }, []);
 
   const playSegment = useCallback(async (startTime: number, showLoading: boolean) => {
     const key = normalizeStart(startTime);
@@ -225,21 +280,8 @@ export default function Home() {
       return;
     }
 
-    if (audioRef.current && job.audioUrl) {
-      isSyncingRef.current = true;
-      ytPlayerRef.current?.seekTo(key, true);
-      audioRef.current.src = job.audioUrl;
-      audioRef.current.load();
-      await new Promise(r => setTimeout(r, 600));
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(() => {});
-      ytPlayerRef.current?.playVideo();
-      activeSegmentKeyRef.current = key;
-      lastTimeRef.current = key;
-      setIsPlaying(true);
-      setTimeout(() => { isSyncingRef.current = false; }, 800);
-    }
-  }, [fetchSegment, toast]);
+    playSynced(job, key);
+  }, [fetchSegment, toast, playSynced]);
 
   const handleInitialPlay = useCallback(async () => {
     if (!isValid || !selectedModel || !selectedVoice) {
@@ -270,20 +312,7 @@ export default function Home() {
         return;
       }
 
-      if (audioRef.current && job.audioUrl) {
-        isSyncingRef.current = true;
-        ytPlayerRef.current?.seekTo(key, true);
-        audioRef.current.src = job.audioUrl;
-        audioRef.current.load();
-        await new Promise(r => setTimeout(r, 600));
-        audioRef.current.currentTime = 0;
-        audioRef.current.play().catch(() => {});
-        ytPlayerRef.current?.playVideo();
-        activeSegmentKeyRef.current = key;
-        lastTimeRef.current = key;
-        setIsPlaying(true);
-        setTimeout(() => { isSyncingRef.current = false; }, 800);
-      }
+      playSynced(job, key);
 
       setPipelineVisible(true);
       const nextKey = key + SEGMENT_DURATION;
@@ -293,7 +322,7 @@ export default function Home() {
       setShowOverlay(false);
       toast({ title: '❌ خطأ في الاتصال', variant: 'destructive' });
     }
-  }, [isValid, selectedModel, selectedVoice, fetchSegment, startChain, toast]);
+  }, [isValid, selectedModel, selectedVoice, fetchSegment, startChain, toast, playSynced]);
 
   const handleAudioEnded = useCallback(() => {
     const nextKey = activeSegmentKeyRef.current + SEGMENT_DURATION;
@@ -327,7 +356,6 @@ export default function Home() {
 
   const handleYoutubeStateChange = (event: any) => {
     if (isSyncingRef.current) return;
-
     if (event.data === 1 && !showOverlay) {
       setIsPlaying(true);
       if (audioRef.current?.src && audioRef.current.paused && !audioRef.current.ended) {
@@ -341,20 +369,25 @@ export default function Home() {
     }
   };
 
+  const adjustOffset = (delta: number) => {
+    setAudioOffset(prev => {
+      const next = Math.round((prev + delta) * 10) / 10;
+      return Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, next));
+    });
+  };
+
   const currentModelObj = modelsData?.models?.find(m => m.id === selectedModel);
+  const offsetDisplay = audioOffset === 0 ? '0.0 ث' : `${audioOffset > 0 ? '+' : ''}${audioOffset.toFixed(1)} ث`;
 
   return (
     <div className="min-h-screen bg-background text-foreground relative overflow-hidden" dir="rtl">
-      {/* Background gradient */}
       <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-primary/5 pointer-events-none" />
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-primary/5 blur-3xl rounded-full pointer-events-none" />
 
       <audio ref={audioRef} onEnded={handleAudioEnded} className="hidden" />
 
-      {/* Full blocking overlay - first load only */}
       <ProcessingOverlay isVisible={showOverlay} progressText={overlayProgress} />
 
-      {/* Persistent pipeline bar - background processing */}
       <PipelineBar
         isVisible={pipelineVisible && !showOverlay}
         progressText={pipelineProgress}
@@ -438,8 +471,8 @@ export default function Home() {
                   <h3 className="font-semibold text-sm text-foreground">إعدادات الدبلجة</h3>
                 </div>
 
+                {/* Model + Voice selectors */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Model selector */}
                   <div className="space-y-2">
                     <label className="text-xs text-muted-foreground font-medium">مزود الصوت (TTS)</label>
                     <Select
@@ -458,7 +491,6 @@ export default function Home() {
                     </Select>
                   </div>
 
-                  {/* Voice selector */}
                   <div className="space-y-2">
                     <label className="text-xs text-muted-foreground font-medium">الصوت</label>
                     <Select
@@ -481,25 +513,56 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Speed slider */}
-                <div className="mt-4 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs text-muted-foreground font-medium">سرعة الصوت</label>
-                    <span className="text-xs font-mono text-primary">{speed.toFixed(1)}x</span>
+                {/* Audio offset control */}
+                <div className="mt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs text-muted-foreground font-medium">تزامن الصوت</label>
+                    <span className="text-xs text-muted-foreground">
+                      {audioOffset < 0 ? 'الصوت مُقدَّم' : audioOffset > 0 ? 'الصوت مُؤخَّر' : 'متزامن'}
+                    </span>
                   </div>
-                  <Slider
-                    min={0.5}
-                    max={2.0}
-                    step={0.1}
-                    value={[speed]}
-                    onValueChange={([v]) => setSpeed(v)}
-                    disabled={showOverlay}
-                    className="cursor-pointer"
-                  />
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>0.5x</span>
-                    <span>1.0x (طبيعي)</span>
-                    <span>2.0x</span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => adjustOffset(-OFFSET_STEP)}
+                      disabled={audioOffset <= OFFSET_MIN || showOverlay}
+                      title="تقديم الصوت 0.1 ث"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </Button>
+
+                    <div className="flex-1 flex items-center justify-center bg-background/50 border border-border/50 rounded-md h-8 px-3">
+                      <span className="text-sm font-mono text-primary">{offsetDisplay}</span>
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => adjustOffset(OFFSET_STEP)}
+                      disabled={audioOffset >= OFFSET_MAX || showOverlay}
+                      title="تأخير الصوت 0.1 ث"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => setAudioOffset(0.0)}
+                      disabled={audioOffset === 0 || showOverlay}
+                      title="إعادة الضبط"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                  <div className="flex justify-between text-xs text-muted-foreground mt-1 px-1">
+                    <span>← تقديم</span>
+                    <span className="text-center opacity-50">كل ضغطة = 0.1 ث</span>
+                    <span>تأخير →</span>
                   </div>
                 </div>
 

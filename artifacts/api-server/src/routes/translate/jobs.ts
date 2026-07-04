@@ -11,6 +11,7 @@ export interface Job {
   translation: string | null;
   error: string | null;
   startTime: number | null;
+  videoRate: number | null;
   createdAt: number;
 }
 
@@ -46,6 +47,7 @@ export function createJob(startTime: number): Job {
     translation: null,
     error: null,
     startTime,
+    videoRate: null,
     createdAt: Date.now(),
   };
   jobs.set(jobId, job);
