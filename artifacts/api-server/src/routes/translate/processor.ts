@@ -44,52 +44,69 @@ const directUrlCache = new Map<string, string>();
 // In-flight URL fetches: prevents duplicate yt-dlp calls for the same video
 const directUrlInFlight = new Map<string, Promise<string>>();
 
+// VERIFIED voices — tested against Edge TTS API (only include voices that actually exist)
 const EDGE_VOICES = [
-  // Arabic
-  { id: "ar-SA-HamedNeural", name: "حامد — ذكر سعودي", gender: "ذكر", locale: "ar-SA" },
-  { id: "ar-SA-ZariyahNeural", name: "زارية — أنثى سعودية", gender: "أنثى", locale: "ar-SA" },
-  { id: "ar-EG-ShakirNeural", name: "شاكر — ذكر مصري", gender: "ذكر", locale: "ar-EG" },
-  { id: "ar-EG-SalmaNeural", name: "سلمى — أنثى مصرية", gender: "أنثى", locale: "ar-EG" },
-  { id: "ar-AE-HamdanNeural", name: "حمدان — ذكر إماراتي", gender: "ذكر", locale: "ar-AE" },
-  { id: "ar-AE-FatimaNeural", name: "فاطمة — أنثى إماراتية", gender: "أنثى", locale: "ar-AE" },
-  // English Multilingual
-  { id: "en-US-AvaMultilingualNeural", name: "Ava — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-AndrewMultilingualNeural", name: "Andrew — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-EmmaMultilingualNeural", name: "Emma — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-BrianMultilingualNeural", name: "Brian — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-JennyMultilingualNeural", name: "Jenny — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-RyanMultilingualNeural", name: "Ryan — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-AdamMultilingualNeural", name: "Adam — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-AmandaMultilingualNeural", name: "Amanda — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-BrandonMultilingualNeural", name: "Brandon — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-ChristopherMultilingualNeural", name: "Christopher — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-CoraMultilingualNeural", name: "Cora — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-DavisMultilingualNeural", name: "Davis — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-DerekMultilingualNeural", name: "Derek — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-DustinMultilingualNeural", name: "Dustin — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-EvelynMultilingualNeural", name: "Evelyn — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-LewisMultilingualNeural", name: "Lewis — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-LolaMultilingualNeural", name: "Lola — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-NancyMultilingualNeural", name: "Nancy — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-PhoebeMultilingualNeural", name: "Phoebe — أنثى أمريكية", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-SamuelMultilingualNeural", name: "Samuel — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-SteffanMultilingualNeural", name: "Steffan — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-StephenMultilingualNeural", name: "Stephen — ذكر أمريكي", gender: "ذكر", locale: "en-US" },
-  // Turbo Multilingual
-  { id: "en-US-EchoTurboMultilingualNeural", name: "Echo — ذكر أمريكي (Turbo)", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-FableTurboMultilingualNeural", name: "Fable — أنثى أمريكية (Turbo)", gender: "أنثى", locale: "en-US" },
-  { id: "en-US-OnyxTurboMultilingualNeural", name: "Onyx — ذكر أمريكي (Turbo)", gender: "ذكر", locale: "en-US" },
-  { id: "en-US-NovaTurboMultilingualNeural", name: "Nova — أنثى أمريكية (Turbo)", gender: "أنثى", locale: "en-US" },
-  // French
-  { id: "fr-FR-RemyMultilingualNeural", name: "Remy — ذكر فرنسي", gender: "ذكر", locale: "fr-FR" },
-  { id: "fr-FR-VivienneMultilingualNeural", name: "Vivienne — أنثى فرنسية", gender: "أنثى", locale: "fr-FR" },
-  // German
-  { id: "de-DE-SeraphinaMultilingualNeural", name: "Seraphina — أنثى ألمانية", gender: "أنثى", locale: "de-DE" },
-  { id: "de-DE-FlorianMultilingualNeural", name: "Florian — ذكر ألماني", gender: "ذكر", locale: "de-DE" },
-  // Chinese
-  { id: "zh-CN-XiaoxiaoMultilingualNeural", name: "Xiaoxiao — أنثى صينية", gender: "أنثى", locale: "zh-CN" },
-  // Portuguese
-  { id: "pt-BR-ThalitaMultilingualNeural", name: "Thalita — أنثى برازيلية", gender: "أنثى", locale: "pt-BR" },
+  // ===== العربية — المملكة العربية السعودية =====
+  { id: "ar-SA-HamedNeural",   name: "حامد — المملكة العربية السعودية",   gender: "ذكر",  locale: "ar-SA" },
+  { id: "ar-SA-ZariyahNeural", name: "زارية — المملكة العربية السعودية",  gender: "أنثى", locale: "ar-SA" },
+  // ===== العربية — مصر =====
+  { id: "ar-EG-ShakirNeural",  name: "شاكر — مصر",    gender: "ذكر",  locale: "ar-EG" },
+  { id: "ar-EG-SalmaNeural",   name: "سلمى — مصر",    gender: "أنثى", locale: "ar-EG" },
+  // ===== العربية — الإمارات =====
+  { id: "ar-AE-HamdanNeural",  name: "حمدان — الإمارات", gender: "ذكر",  locale: "ar-AE" },
+  { id: "ar-AE-FatimaNeural",  name: "فاطمة — الإمارات", gender: "أنثى", locale: "ar-AE" },
+  // ===== العربية — الكويت =====
+  { id: "ar-KW-FahedNeural",   name: "فهد — الكويت",  gender: "ذكر",  locale: "ar-KW" },
+  { id: "ar-KW-NouraNeural",   name: "نورة — الكويت", gender: "أنثى", locale: "ar-KW" },
+  // ===== العربية — قطر =====
+  { id: "ar-QA-MoazNeural",    name: "معاذ — قطر",    gender: "ذكر",  locale: "ar-QA" },
+  { id: "ar-QA-AmalNeural",    name: "أمل — قطر",     gender: "أنثى", locale: "ar-QA" },
+  // ===== العربية — البحرين =====
+  { id: "ar-BH-AliNeural",     name: "علي — البحرين",  gender: "ذكر",  locale: "ar-BH" },
+  { id: "ar-BH-LailaNeural",   name: "ليلى — البحرين", gender: "أنثى", locale: "ar-BH" },
+  // ===== العربية — العراق =====
+  { id: "ar-IQ-BasselNeural",  name: "باسل — العراق", gender: "ذكر",  locale: "ar-IQ" },
+  { id: "ar-IQ-RanaNeural",    name: "رنا — العراق",   gender: "أنثى", locale: "ar-IQ" },
+  // ===== العربية — الأردن =====
+  { id: "ar-JO-TaimNeural",    name: "تيم — الأردن",   gender: "ذكر",  locale: "ar-JO" },
+  { id: "ar-JO-SanaNeural",    name: "سنا — الأردن",   gender: "أنثى", locale: "ar-JO" },
+  // ===== العربية — لبنان =====
+  { id: "ar-LB-RamiNeural",    name: "رامي — لبنان",  gender: "ذكر",  locale: "ar-LB" },
+  { id: "ar-LB-LaylaNeural",   name: "ليلى — لبنان",  gender: "أنثى", locale: "ar-LB" },
+  // ===== العربية — المغرب =====
+  { id: "ar-MA-JamalNeural",   name: "جمال — المغرب", gender: "ذكر",  locale: "ar-MA" },
+  { id: "ar-MA-MounaNeural",   name: "منى — المغرب",  gender: "أنثى", locale: "ar-MA" },
+  // ===== العربية — تونس =====
+  { id: "ar-TN-HediNeural",    name: "هادي — تونس",   gender: "ذكر",  locale: "ar-TN" },
+  { id: "ar-TN-ReemNeural",    name: "ريم — تونس",    gender: "أنثى", locale: "ar-TN" },
+  // ===== العربية — الجزائر =====
+  { id: "ar-DZ-IsmaelNeural",  name: "إسماعيل — الجزائر", gender: "ذكر",  locale: "ar-DZ" },
+  { id: "ar-DZ-AminaNeural",   name: "أمينة — الجزائر",   gender: "أنثى", locale: "ar-DZ" },
+  // ===== العربية — سوريا =====
+  { id: "ar-SY-LaithNeural",   name: "ليث — سوريا",   gender: "ذكر",  locale: "ar-SY" },
+  { id: "ar-SY-AmanyNeural",   name: "أماني — سوريا", gender: "أنثى", locale: "ar-SY" },
+  // ===== العربية — عُمان =====
+  { id: "ar-OM-AbdullahNeural",name: "عبد الله — عُمان", gender: "ذكر",  locale: "ar-OM" },
+  { id: "ar-OM-AyshaNeural",   name: "عيشة — عُمان",  gender: "أنثى", locale: "ar-OM" },
+  // ===== العربية — ليبيا =====
+  { id: "ar-LY-OmarNeural",    name: "عمر — ليبيا",   gender: "ذكر",  locale: "ar-LY" },
+  { id: "ar-LY-ImanNeural",    name: "إيمان — ليبيا", gender: "أنثى", locale: "ar-LY" },
+  // ===== العربية — اليمن =====
+  { id: "ar-YE-SalehNeural",   name: "صالح — اليمن",  gender: "ذكر",  locale: "ar-YE" },
+  { id: "ar-YE-MaryamNeural",  name: "مريم — اليمن",  gender: "أنثى", locale: "ar-YE" },
+  // ===== Multilingual — يتحدثون العربية تلقائياً =====
+  { id: "en-US-AvaMultilingualNeural",         name: "Ava — متعدد اللغات (أمريكي)",       gender: "أنثى", locale: "multilingual" },
+  { id: "en-US-AndrewMultilingualNeural",      name: "Andrew — متعدد اللغات (أمريكي)",    gender: "ذكر",  locale: "multilingual" },
+  { id: "en-US-EmmaMultilingualNeural",        name: "Emma — متعدد اللغات (أمريكي)",      gender: "أنثى", locale: "multilingual" },
+  { id: "en-US-BrianMultilingualNeural",       name: "Brian — متعدد اللغات (أمريكي)",     gender: "ذكر",  locale: "multilingual" },
+  { id: "en-AU-WilliamMultilingualNeural",     name: "William — متعدد اللغات (أسترالي)",  gender: "ذكر",  locale: "multilingual" },
+  { id: "fr-FR-RemyMultilingualNeural",        name: "Remy — متعدد اللغات (فرنسي)",       gender: "ذكر",  locale: "multilingual" },
+  { id: "fr-FR-VivienneMultilingualNeural",    name: "Vivienne — متعدد اللغات (فرنسية)",  gender: "أنثى", locale: "multilingual" },
+  { id: "de-DE-SeraphinaMultilingualNeural",   name: "Seraphina — متعدد اللغات (ألمانية)",gender: "أنثى", locale: "multilingual" },
+  { id: "de-DE-FlorianMultilingualNeural",     name: "Florian — متعدد اللغات (ألماني)",   gender: "ذكر",  locale: "multilingual" },
+  { id: "it-IT-GiuseppeMultilingualNeural",    name: "Giuseppe — متعدد اللغات (إيطالي)",  gender: "ذكر",  locale: "multilingual" },
+  { id: "ko-KR-HyunsuMultilingualNeural",      name: "Hyunsu — متعدد اللغات (كوري)",      gender: "ذكر",  locale: "multilingual" },
+  { id: "pt-BR-ThalitaMultilingualNeural",     name: "Thalita — متعدد اللغات (برازيلية)", gender: "أنثى", locale: "multilingual" },
 ];
 
 export const TTS_MODELS = [
@@ -200,36 +217,40 @@ async function transcribeAudio(audioPath: string): Promise<string> {
   return transcription.text;
 }
 
-function buildContextMessage(previous: string[]): string {
-  if (!previous.length) return "";
-  let msg = "\n\nالترجمات السابقة من نفس المشروع (للاتساق فقط):\n";
-  for (const t of previous.slice(-5)) {
-    msg += `--- ${t}\n`;
-  }
-  return msg;
-}
-
 async function translateToArabic(text: string, videoUrl: string): Promise<string> {
   const previous = translationContexts.get(videoUrl) ?? [];
-  const contextMsg = buildContextMessage(previous);
 
   const systemPrompt =
-    "أنت مترجم محترف على مستوى النشر. \u201c" +
-    "ترجم النص التالي إلى العربية الفصحى ترجمة دقيقة وطبيعية، مع الحفاظ الكامل على المعنى والسياق والنبرة والأسلوب الأصلي. \u201c" +
-    "قد تتم تزويدك بترجمات سابقة من نفس المشروع. استخدمها كمرجع للحفاظ على الاتساق في المصطلحات والأسماء والأسلوب، مع مراعاة السياق الحالي. \u201c" +
-    "لا تنسخ الترجمة السابقة حرفيًا إلا إذا كانت الأنسب، بل اجعل الترجمة الجديدة مترابطة ومتسقة معها. \u201c" +
-    "القواعد: انقل المعنى المقصد لا الكلمات حرفيًا. استخدم عربية سليمة وسلسة. حافظ على المصطلحات نفسها طوال المشروع. حافظ على أسماء الأشخاص والعلامات التجارية. لا تضف أو تحذف أي معلومات. \u201c" +
-    "إذا وجدت أكثر من ترجمة صحيحة، اختر الأكثر طبيعية والأكثر توافقًا مع الترجمات السابقة.";
+    "أنت مترجم محترف على مستوى النشر.\n" +
+    "ترجم النص التالي إلى العربية الفصحى ترجمة دقيقة وطبيعية، مع الحفاظ الكامل على المعنى والسياق والنبرة والأسلوب الأصلي.\n\n" +
+    "قد يتم تزويدك بترجمات سابقة من نفس المشروع. استخدمها كمرجع للحفاظ على الاتساق في المصطلحات والأسماء والأسلوب، مع مراعاة السياق الحالي. " +
+    "لا تنسخ الترجمة السابقة حرفيًا إلا إذا كانت الأنسب، بل اجعل الترجمة الجديدة مترابطة ومتسقة معها.\n\n" +
+    "القواعد:\n" +
+    "- انقل المعنى المقصود، لا الكلمات حرفيًا.\n" +
+    "- استخدم عربية سليمة وسلسة.\n" +
+    "- حافظ على المصطلحات نفسها طوال المشروع.\n" +
+    "- حافظ على أسماء الأشخاص والعلامات التجارية.\n" +
+    "- لا تضف أو تحذف أي معلومات.\n" +
+    "- إذا وجدت أكثر من ترجمة صحيحة، اختر الأكثر طبيعية والأكثر توافقًا مع الترجمات السابقة.\n\n" +
+    "أخرج الترجمة فقط بدون أي شرح.";
+
+  // Build the user message in the exact format: الترجمة السابقة / النص الجديد
+  let userContent: string;
+  if (previous.length > 0) {
+    const contextBlock = previous.slice(-5).join("\n\n---\n\n");
+    userContent =
+      `الترجمة السابقة:\n${contextBlock}\n\n` +
+      `النص الجديد:\n${text}`;
+  } else {
+    userContent = `النص الجديد:\n${text}`;
+  }
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     max_tokens: 2048,
     messages: [
       { role: "system", content: systemPrompt },
-      {
-        role: "user",
-        content: `النص التالي:${contextMsg}\n${text}\n\nأخرج الترجمة فقط بدون أي شرح.`,
-      },
+      { role: "user", content: userContent },
     ],
   });
   return response.choices[0]?.message?.content ?? text;
@@ -240,7 +261,8 @@ async function translateToArabic(text: string, videoUrl: string): Promise<string
  * Creates a temporary MP3 that gets cleaned up after serving.
  */
 export async function generatePreview(voiceId: string): Promise<string> {
-  const sampleText = "أهلاً وسهلاً، هذا مثال على وحده لمعاينة الصوت المختار قبل استخدامه في الترجمة.";
+  // Arabic text so multilingual voices speak Arabic by default
+  const sampleText = "أهلاً وسهلاً، هذا مثال على هذا الصوت باللغة العربية. يمكنك استخدامه في دبلجة الفيديو.";
   const previewDir = await mkdtemp(join(tmpdir(), "vt-preview-"));
   const previewPath = join(previewDir, "preview.mp3");
   await generateEdgeTTS(sampleText, voiceId, previewPath);
