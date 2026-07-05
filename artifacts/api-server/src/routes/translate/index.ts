@@ -1,17 +1,43 @@
 import { Router, type IRouter } from "express";
-import { createReadStream, existsSync } from "fs";
+import { createReadStream, existsSync, unlinkSync } from "fs";
 import {
   ProcessVideoBody,
   GetJobStatusParams,
   GetAudioParams,
 } from "@workspace/api-zod";
 import { createJob, getJob } from "./jobs.js";
-import { processVideoSegment, getAudioPath, TTS_MODELS } from "./processor.js";
+import { processVideoSegment, getAudioPath, TTS_MODELS, generatePreview } from "./processor.js";
 
 const router: IRouter = Router();
 
 router.get("/translate/models", (_req, res) => {
   res.json({ models: TTS_MODELS });
+});
+
+router.post("/translate/preview", async (req, res) => {
+  const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : "";
+  if (!voiceId) {
+    res.status(400).json({ error: "validation_error", message: "voiceId required" });
+    return;
+  }
+
+  try {
+    const previewPath = await generatePreview(voiceId);
+    if (!existsSync(previewPath)) {
+      res.status(500).json({ error: "preview_failed", message: "فشل توليد المعاينة" });
+      return;
+    }
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "no-cache");
+    const stream = createReadStream(previewPath);
+    stream.on("close", () => {
+      try { unlinkSync(previewPath); } catch { /* ignore */ }
+    });
+    stream.pipe(res);
+  } catch (err: any) {
+    res.status(500).json({ error: "preview_failed", message: err.message });
+  }
 });
 
 router.post("/translate/process", async (req, res) => {

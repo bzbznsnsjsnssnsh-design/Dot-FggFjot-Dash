@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import YouTube from 'react-youtube';
 import { Play, Youtube, Settings, Wand2, RefreshCcw, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -8,6 +8,7 @@ import { useGetTtsModels } from '@workspace/api-client-react';
 import { useYoutubeUrl } from '@/hooks/use-youtube-url';
 import { ProcessingOverlay } from '@/components/processing-overlay';
 import { PipelineBar } from '@/components/pipeline-bar';
+import { VoicePicker } from '@/components/voice-picker';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -376,7 +377,21 @@ export default function Home() {
     });
   };
 
-  const currentModelObj = modelsData?.models?.find(m => m.id === selectedModel);
+  const allVoices = useMemo(() => {
+    const voices: { id: string; name: string; gender: string; locale: string }[] = [];
+    for (const m of modelsData?.models ?? []) {
+      for (const v of m.voices ?? []) {
+        voices.push({
+          id: v.id,
+          name: v.name,
+          gender: v.gender,
+          locale: (v as any).locale || (m.id === 'google-translate' ? 'ar' : 'en-US'),
+        });
+      }
+    }
+    return voices;
+  }, [modelsData]);
+
   const offsetDisplay = audioOffset === 0 ? '0.0 ث' : `${audioOffset > 0 ? '+' : ''}${audioOffset.toFixed(1)} ث`;
 
   return (
@@ -471,46 +486,34 @@ export default function Home() {
                   <h3 className="font-semibold text-sm text-foreground">إعدادات الدبلجة</h3>
                 </div>
 
-                {/* Model + Voice selectors */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs text-muted-foreground font-medium">مزود الصوت (TTS)</label>
-                    <Select
-                      value={selectedModel}
-                      onValueChange={setSelectedModel}
-                      disabled={isLoadingModels || showOverlay}
-                    >
-                      <SelectTrigger className="bg-background/50 border-border/50">
-                        <SelectValue placeholder="اختر المزود..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {modelsData?.models.map(m => (
-                          <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                {/* Model selector */}
+                <div className="mb-4">
+                  <label className="text-xs text-muted-foreground font-medium block mb-1.5">مزود الصوت (TTS)</label>
+                  <Select
+                    value={selectedModel}
+                    onValueChange={setSelectedModel}
+                    disabled={isLoadingModels || showOverlay}
+                  >
+                    <SelectTrigger className="bg-background/50 border-border/50">
+                      <SelectValue placeholder="اختر المزود..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {modelsData?.models.map(m => (
+                        <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-                  <div className="space-y-2">
-                    <label className="text-xs text-muted-foreground font-medium">الصوت</label>
-                    <Select
-                      value={selectedVoice}
-                      onValueChange={setSelectedVoice}
-                      disabled={isLoadingModels || showOverlay || !selectedModel}
-                    >
-                      <SelectTrigger className="bg-background/50 border-border/50">
-                        <SelectValue placeholder="اختر الصوت..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {currentModelObj?.voices.map(v => (
-                          <SelectItem key={v.id} value={v.id}>
-                            <span>{v.name}</span>
-                            <span className="text-muted-foreground text-xs mr-2">({v.gender})</span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                {/* Voice picker */}
+                <div className="mb-4">
+                  <label className="text-xs text-muted-foreground font-medium block mb-1.5">الصوت</label>
+                  <VoicePicker
+                    voices={allVoices}
+                    selectedVoice={selectedVoice}
+                    onSelect={setSelectedVoice}
+                    disabled={isLoadingModels || showOverlay || !selectedModel}
+                  />
                 </div>
 
                 {/* Audio offset control */}

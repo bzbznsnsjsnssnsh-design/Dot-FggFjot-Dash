@@ -204,10 +204,14 @@ components:
           type: string
         gender:
           type: string
+        locale:
+          type: string
+          description: Language/locale code for grouping voices
       required:
         - id
         - name
         - gender
+        - locale
 
     TtsModel:
       type: object
