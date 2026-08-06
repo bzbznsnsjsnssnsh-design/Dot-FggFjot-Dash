@@ -23,7 +23,6 @@ import { Card } from '@/components/ui/card';
 
 const SEGMENT_DURATION = 20;
 const POLL_INTERVAL = 1500;
-const MAX_ATEMPO = 1.7;
 const OFFSET_STEP = 0.1;
 const OFFSET_MIN = -2.0;
 const OFFSET_MAX = 2.0;
@@ -107,7 +106,10 @@ export default function Home() {
   const [pipelineSegmentLabel, setPipelineSegmentLabel] = useState('');
   const [pipelineDone, setPipelineDone] = useState(false);
 
+  // Segment job cache: key → SegmentJob
   const segmentCacheRef = useRef<Map<number, SegmentJob>>(new Map());
+  // Pre-fetched audio blob URLs: key → blob URL (already in memory, instant to play)
+  const blobUrlCacheRef = useRef<Map<number, string>>(new Map());
   const inFlightRef = useRef<Map<number, Promise<SegmentJob>>>(new Map());
   const furthestQueuedRef = useRef(-1);
   const chainAbortRef = useRef<AbortController | null>(null);
@@ -116,7 +118,6 @@ export default function Home() {
 
   const normalizeStart = (t: number) => Math.floor(t / SEGMENT_DURATION) * SEGMENT_DURATION;
 
-  // Keep ref in sync with state (for use inside closures)
   useEffect(() => { audioOffsetRef.current = audioOffset; }, [audioOffset]);
 
   // Set defaults
@@ -141,6 +142,9 @@ export default function Home() {
   useEffect(() => {
     chainAbortRef.current?.abort();
     segmentCacheRef.current.clear();
+    // Revoke and clear blob URLs
+    blobUrlCacheRef.current.forEach(u => URL.revokeObjectURL(u));
+    blobUrlCacheRef.current.clear();
     inFlightRef.current.clear();
     furthestQueuedRef.current = -1;
     setHasStarted(false);
@@ -148,6 +152,28 @@ export default function Home() {
     setPipelineVisible(false);
     setPipelineDone(false);
   }, [url]);
+
+  /**
+   * Pre-fetch audio file as blob so it's in memory before it's needed.
+   * Stored by segment key. Called right after a segment completes.
+   */
+  const prefetchAudioBlob = useCallback((key: number, audioUrl: string) => {
+    if (blobUrlCacheRef.current.has(key)) return;
+    fetch(audioUrl)
+      .then(r => r.blob())
+      .then(blob => {
+        const blobUrl = URL.createObjectURL(blob);
+        blobUrlCacheRef.current.set(key, blobUrl);
+      })
+      .catch(() => {}); // silent — falls back to direct URL on transition
+  }, []);
+
+  /**
+   * Get the best audio URL for a key: blob URL if pre-fetched, else direct URL.
+   */
+  const getAudioUrl = useCallback((key: number, fallback: string): string => {
+    return blobUrlCacheRef.current.get(key) ?? fallback;
+  }, []);
 
   const fetchSegment = useCallback(async (
     startTime: number,
@@ -173,6 +199,8 @@ export default function Home() {
 
     if (job.status === 'completed') {
       segmentCacheRef.current.set(key, job);
+      // Pre-fetch the audio blob immediately so it's in memory for instant playback
+      if (job.audioUrl) prefetchAudioBlob(key, job.audioUrl);
       if (pipelineUpdate) {
         setPipelineDone(true);
         setTimeout(() => setPipelineDone(false), 800);
@@ -180,7 +208,7 @@ export default function Home() {
     }
 
     return job;
-  }, [url, selectedModel, selectedVoice]);
+  }, [url, selectedModel, selectedVoice, prefetchAudioBlob]);
 
   const startChain = useCallback(async (fromSegment: number, signal: AbortSignal) => {
     let current = normalizeStart(fromSegment);
@@ -205,32 +233,33 @@ export default function Home() {
       }
       current += SEGMENT_DURATION;
       await new Promise<void>(r => {
-        const t = setTimeout(r, 500);
+        const t = setTimeout(r, 300);
         signal.addEventListener('abort', () => { clearTimeout(t); r(); }, { once: true });
       });
     }
   }, [fetchSegment]);
 
   /**
-   * Play audio + video in sync with a full seek (used for first segment or user seek).
-   * offset > 0: delay audio (video starts first)
-   * offset < 0: delay video (audio starts first)
+   * Full seek + play (used for initial play and manual seeks only).
+   * Pauses everything, seeks video, loads audio, then plays both.
    */
   const playSynced = useCallback((job: SegmentJob, key: number) => {
     if (!audioRef.current || !job.audioUrl) return;
 
     const offset = audioOffsetRef.current;
     const rate = job.videoRate ?? 1.0;
+    const audioUrl = getAudioUrl(key, job.audioUrl);
 
     isSyncingRef.current = true;
     ytPlayerRef.current?.seekTo(key, true);
-    audioRef.current.src = job.audioUrl;
+
+    // If blob is ready, set src and wait for canplaythrough for gapless start
+    audioRef.current.src = audioUrl;
     audioRef.current.load();
 
-    setTimeout(() => {
+    const doPlay = () => {
       if (!audioRef.current) return;
       audioRef.current.currentTime = 0;
-
       if (offset >= 0) {
         ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
         ytPlayerRef.current?.playVideo();
@@ -242,52 +271,148 @@ export default function Home() {
           ytPlayerRef.current?.playVideo();
         }, -offset * 1000);
       }
-
       activeSegmentKeyRef.current = key;
       lastTimeRef.current = key;
       setIsPlaying(true);
       setTimeout(() => { isSyncingRef.current = false; }, 800);
-    }, 600);
-  }, []);
+    };
+
+    // Wait for audio to be ready (blob is instant; direct URL may take a moment)
+    const isBlobUrl = audioUrl.startsWith('blob:');
+    if (isBlobUrl) {
+      setTimeout(doPlay, 150); // blob loads near-instantly
+    } else {
+      setTimeout(doPlay, 600); // fallback delay for direct URL
+    }
+  }, [getAudioUrl]);
 
   /**
-   * Seamless transition to next segment (no pause, no seek delay).
-   * Used when audio ends naturally and the next segment is already cached.
+   * Seamless audio-only transition (no video seek).
+   * Used when the next segment is cached AND its audio is pre-fetched as a blob.
+   * The video keeps playing uninterrupted; only the audio track switches.
    */
   const transitionToNext = useCallback((job: SegmentJob, key: number) => {
     if (!audioRef.current || !job.audioUrl) return;
     const rate = job.videoRate ?? 1.0;
+    const audioUrl = getAudioUrl(key, job.audioUrl);
+    const isBlobUrl = audioUrl.startsWith('blob:');
 
-    isSyncingRef.current = true;
     activeSegmentKeyRef.current = key;
     lastTimeRef.current = key;
+    isSyncingRef.current = true;
 
-    // Switch audio source without pausing video
-    audioRef.current.src = job.audioUrl;
+    audioRef.current.src = audioUrl;
     audioRef.current.load();
-    audioRef.current.currentTime = 0;
-    audioRef.current.play().catch(() => {});
 
-    // Gently nudge video to the correct position if it drifted
-    const ytTime = ytPlayerRef.current?.getCurrentTime?.() ?? key;
-    if (Math.abs(ytTime - key) > 1.5) {
-      ytPlayerRef.current?.seekTo(key, true);
+    const doPlay = () => {
+      if (!audioRef.current) return;
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch(() => {});
+      // Gently correct video drift if more than 1.5s off
+      const ytTime = ytPlayerRef.current?.getCurrentTime?.() ?? key;
+      if (Math.abs(ytTime - key) > 1.5) {
+        ytPlayerRef.current?.seekTo(key, true);
+      }
+      ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
+      setIsPlaying(true);
+      setTimeout(() => { isSyncingRef.current = false; }, 400);
+    };
+
+    if (isBlobUrl) {
+      doPlay(); // already in memory, plays instantly
+    } else {
+      // Direct URL fallback: wait a moment for buffering
+      setTimeout(doPlay, 400);
     }
-    ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
+  }, [getAudioUrl]);
 
-    setIsPlaying(true);
-    setTimeout(() => { isSyncingRef.current = false; }, 500);
-  }, []);
+  /**
+   * Handle audio ending: decide how to move to the next segment.
+   * - If next segment is cached + blob ready → seamless transition (video never pauses)
+   * - If next segment is cached + blob still loading → short wait then switch
+   * - If next segment not yet cached → pause video + wait silently (no overlay)
+   *   Once ready, seek video back to correct position and play
+   */
+  const handleAudioEnded = useCallback(async () => {
+    const nextKey = activeSegmentKeyRef.current + SEGMENT_DURATION;
+
+    // Stop at end of video
+    const videoDuration = ytPlayerRef.current?.getDuration?.() ?? Infinity;
+    if (Number.isFinite(videoDuration) && nextKey >= videoDuration) {
+      setIsPlaying(false);
+      ytPlayerRef.current?.pauseVideo();
+      return;
+    }
+
+    const cached = segmentCacheRef.current.get(nextKey);
+
+    if (cached?.status === 'completed' && cached.audioUrl) {
+      // Check if blob URL is ready
+      const blobUrl = blobUrlCacheRef.current.get(nextKey);
+      if (blobUrl) {
+        // ✅ Best case: blob in memory → instant, seamless transition
+        transitionToNext(cached, nextKey);
+      } else {
+        // Blob still downloading — wait up to 2s for it
+        let waited = 0;
+        while (!blobUrlCacheRef.current.has(nextKey) && waited < 2000) {
+          await new Promise(r => setTimeout(r, 100));
+          waited += 100;
+        }
+        transitionToNext(cached, nextKey);
+      }
+      return;
+    }
+
+    // Segment not ready yet — pause video silently and wait
+    ytPlayerRef.current?.pauseVideo();
+    setIsPlaying(false);
+
+    // Wait for background chain to finish (up to 60s)
+    let waited = 0;
+    while (!segmentCacheRef.current.has(nextKey) && waited < 60000) {
+      await new Promise(r => setTimeout(r, 500));
+      waited += 500;
+    }
+
+    const readyJob = segmentCacheRef.current.get(nextKey);
+    if (!readyJob || readyJob.status === 'failed') {
+      // Last resort: request this segment directly with overlay
+      setShowOverlay(true);
+      setOverlayProgress('جاري تجهيز المقطع...');
+      try {
+        const abortCtrl = new AbortController();
+        const job = await fetchSegment(nextKey, abortCtrl.signal, (p) => setOverlayProgress(p));
+        setShowOverlay(false);
+        if (job.status === 'completed') {
+          playSynced(job, nextKey);
+        } else {
+          toast({ title: '❌ فشل المقطع', variant: 'destructive' });
+        }
+      } catch {
+        setShowOverlay(false);
+        toast({ title: '❌ خطأ في تحميل المقطع', variant: 'destructive' });
+      }
+      return;
+    }
+
+    // Segment is now ready — play it (video was paused at current position)
+    setShowOverlay(false);
+    // Wait for blob pre-fetch (it may have just completed)
+    let blobWaited = 0;
+    while (!blobUrlCacheRef.current.has(nextKey) && blobWaited < 2000) {
+      await new Promise(r => setTimeout(r, 100));
+      blobWaited += 100;
+    }
+    playSynced(readyJob, nextKey);
+  }, [transitionToNext, fetchSegment, playSynced, toast]);
 
   const playSegment = useCallback(async (startTime: number, showLoading: boolean) => {
     const key = normalizeStart(startTime);
 
-    // Only pause if we need to show the loading overlay or seek to a different position
-    if (showLoading) {
-      ytPlayerRef.current?.pauseVideo();
-      audioRef.current?.pause();
-      setIsPlaying(false);
-    }
+    ytPlayerRef.current?.pauseVideo();
+    audioRef.current?.pause();
+    setIsPlaying(false);
 
     let job = segmentCacheRef.current.get(key);
 
@@ -304,23 +429,19 @@ export default function Home() {
           return;
         }
       } else {
-        // Wait up to 10s for the background chain to finish this segment
+        // Background seek: wait up to 30s without showing overlay
         let waited = 0;
-        while (!segmentCacheRef.current.has(key) && waited < 10000) {
-          await new Promise(r => setTimeout(r, 300));
-          waited += 300;
+        while (!segmentCacheRef.current.has(key) && waited < 30000) {
+          await new Promise(r => setTimeout(r, 400));
+          waited += 400;
         }
         job = segmentCacheRef.current.get(key);
-        // If it's still not ready, pause and show loading
         if (!job) {
-          ytPlayerRef.current?.pauseVideo();
-          audioRef.current?.pause();
-          setIsPlaying(false);
+          // Still not ready: request it directly
           setShowOverlay(true);
           setOverlayProgress('جاري تجهيز المقطع...');
-          const abortCtrl2 = new AbortController();
           try {
-            job = await fetchSegment(key, abortCtrl2.signal, (p) => setOverlayProgress(p));
+            job = await fetchSegment(key, abortCtrl.signal, (p) => setOverlayProgress(p));
           } catch {
             setShowOverlay(false);
             toast({ title: '❌ خطأ', description: 'فشل تحميل المقطع.', variant: 'destructive' });
@@ -337,6 +458,13 @@ export default function Home() {
       return;
     }
 
+    // Wait for blob URL if available
+    let waited = 0;
+    while (!blobUrlCacheRef.current.has(key) && waited < 1500) {
+      await new Promise(r => setTimeout(r, 100));
+      waited += 100;
+    }
+
     playSynced(job, key);
   }, [fetchSegment, toast, playSynced]);
 
@@ -348,6 +476,8 @@ export default function Home() {
 
     chainAbortRef.current?.abort();
     segmentCacheRef.current.clear();
+    blobUrlCacheRef.current.forEach(u => URL.revokeObjectURL(u));
+    blobUrlCacheRef.current.clear();
     inFlightRef.current.clear();
 
     const time = ytPlayerRef.current?.getCurrentTime() || 0;
@@ -369,6 +499,13 @@ export default function Home() {
         return;
       }
 
+      // Wait up to 1s for blob to be ready for a clean start
+      let waited = 0;
+      while (!blobUrlCacheRef.current.has(key) && waited < 1000) {
+        await new Promise(r => setTimeout(r, 100));
+        waited += 100;
+      }
+
       playSynced(job, key);
 
       setPipelineVisible(true);
@@ -380,26 +517,6 @@ export default function Home() {
       toast({ title: '❌ خطأ في الاتصال', variant: 'destructive' });
     }
   }, [isValid, selectedModel, selectedVoice, fetchSegment, startChain, toast, playSynced]);
-
-  const handleAudioEnded = useCallback(() => {
-    const nextKey = activeSegmentKeyRef.current + SEGMENT_DURATION;
-
-    // Check we haven't gone past the video duration
-    const videoDuration = ytPlayerRef.current?.getDuration?.() ?? Infinity;
-    if (Number.isFinite(videoDuration) && nextKey >= videoDuration) {
-      setIsPlaying(false);
-      return;
-    }
-
-    const cached = segmentCacheRef.current.get(nextKey);
-    if (cached && cached.status === 'completed') {
-      // Seamless transition — no pause, no overlay
-      transitionToNext(cached, nextKey);
-    } else {
-      // Not ready yet — wait for background chain then play
-      playSegment(nextKey, false);
-    }
-  }, [playSegment, transitionToNext]);
 
   // Seek detection
   useEffect(() => {
