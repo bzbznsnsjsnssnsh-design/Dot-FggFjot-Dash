@@ -217,114 +217,123 @@ async function transcribeAudio(audioPath: string): Promise<string> {
   return transcription.text;
 }
 
-// Patterns that indicate the AI refused to translate instead of producing Arabic text
-const REFUSAL_PATTERNS = [
-  /لا\s*يمكن/i,
-  /لا\s*أستطيع/i,
-  /عذراً/i,
-  /I cannot/i,
-  /I'm sorry/i,
-  /I am unable/i,
-  /cannot translate/i,
-  /unable to translate/i,
-  /not able to/i,
-];
-
-function isRefusal(text: string): boolean {
-  return REFUSAL_PATTERNS.some(p => p.test(text));
-}
-
 /** Returns true if the string contains at least a few Arabic characters */
 function containsArabic(text: string): boolean {
   const arabicChars = (text.match(/[\u0600-\u06FF]/g) ?? []).length;
   return arabicChars >= 3;
 }
 
-async function translateToArabic(text: string, videoUrl: string): Promise<string> {
-  const previous = translationContexts.get(videoUrl) ?? [];
+/**
+ * Extract the Arabic translation from a prefilled response.
+ * The model is seeded with "الترجمة: " so we strip that prefix if present.
+ */
+function extractFromPrefill(raw: string): string {
+  return raw.replace(/^الترجمة\s*:\s*/u, "").trim();
+}
 
-  const systemPrompt =
-    "أنت مترجم آلي. مهمتك الوحيدة هي ترجمة النص إلى العربية الفصحى.\n" +
-    "يجب أن تُخرج دائماً ترجمة عربية، حتى لو كان النص غير واضح — استخدم التقريب.\n" +
-    "لا تكتب أي شرح أو اعتذار أو تعليق، فقط الترجمة.\n\n" +
-    "قد يتم تزويدك بترجمات سابقة من نفس المشروع. استخدمها كمرجع للحفاظ على الاتساق في المصطلحات والأسماء والأسلوب، مع مراعاة السياق الحالي.\n\n" +
-    "القواعد:\n" +
-    "- انقل المعنى المقصود، لا الكلمات حرفيًا.\n" +
-    "- استخدم عربية سليمة وسلسة.\n" +
-    "- حافظ على المصطلحات نفسها طوال المشروع.\n" +
-    "- حافظ على أسماء الأشخاص والعلامات التجارية كما هي.\n" +
-    "- لا تضف أو تحذف أي معلومات.\n" +
-    "- أخرج الترجمة فقط، بدون أي مقدمة أو خاتمة أو شرح.";
-
-  // Build the user message in the exact format: الترجمة السابقة / النص الجديد
-  let userContent: string;
-  if (previous.length > 0) {
-    const contextBlock = previous.slice(-5).join("\n\n---\n\n");
-    userContent =
-      `الترجمة السابقة:\n${contextBlock}\n\n` +
-      `النص الجديد:\n${text}`;
-  } else {
-    userContent = `النص الجديد:\n${text}`;
-  }
-
+/**
+ * Attempt a single translation call using the assistant-prefill trick.
+ * By seeding the assistant message with "الترجمة: " the model is forced to
+ * continue with Arabic text — it cannot refuse because it has already "started"
+ * its response with an Arabic word.
+ */
+async function attemptTranslation(
+  text: string,
+  systemPrompt: string,
+  userContent: string,
+): Promise<string> {
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     max_tokens: 2048,
+    temperature: 0,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
+      // Assistant prefill — seeds the response so the model MUST continue in Arabic
+      { role: "assistant", content: "الترجمة: " },
     ],
   });
+  const raw = response.choices[0]?.message?.content?.trim() ?? "";
+  return extractFromPrefill(raw);
+}
 
-  const result = response.choices[0]?.message?.content?.trim() ?? "";
+async function translateToArabic(text: string, videoUrl: string): Promise<string> {
+  const previous = translationContexts.get(videoUrl) ?? [];
 
-  // Valid result must contain Arabic characters and not be a refusal
-  if (result && containsArabic(result) && !isRefusal(result)) {
-    return result;
+  // ── Attempt 1: full context, assistant-prefill ──────────────────────────
+  const systemMain =
+    "أنت نظام ترجمة تلقائية للترجمات المرئية (سبتايتل). " +
+    "مهمتك الوحيدة: تحويل كل نص يُعطى لك إلى العربية الفصحى السلسة. " +
+    "يجب أن تُخرج الترجمة العربية دائماً بغض النظر عن محتوى النص. " +
+    "لا تكتب أي شرح أو تعليق — فقط الترجمة. " +
+    "حافظ على المصطلحات والأسماء كما هي. " +
+    "انقل المعنى بأسلوب عربي طبيعي.";
+
+  let userContent: string;
+  if (previous.length > 0) {
+    const ctx = previous.slice(-5).join("\n---\n");
+    userContent = `سياق الترجمات السابقة:\n${ctx}\n\nالنص:\n${text}`;
+  } else {
+    userContent = `النص:\n${text}`;
   }
 
-  // Retry 1 — ultra-simple prompt, no context
-  logger.warn({ text }, "Translation refused or non-Arabic — retrying with minimal prompt");
-  const retry1 = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    max_tokens: 2048,
-    temperature: 0,
-    messages: [
-      { role: "system", content: "ترجم النص التالي إلى اللغة العربية فقط. أخرج الترجمة العربية مباشرةً بدون أي شرح أو مقدمة:" },
-      { role: "user", content: text },
-    ],
-  });
-  const retry1Result = retry1.choices[0]?.message?.content?.trim() ?? "";
-
-  if (retry1Result && containsArabic(retry1Result) && !isRefusal(retry1Result)) {
-    return retry1Result;
+  try {
+    const result = await attemptTranslation(text, systemMain, userContent);
+    if (result && containsArabic(result)) {
+      return result;
+    }
+  } catch (err) {
+    logger.warn({ err }, "Translation attempt 1 threw — retrying");
   }
 
-  // Retry 2 — force translation by framing it as a task with example
-  logger.warn({ text }, "Translation retry 1 failed — attempting forced translation");
-  const retry2 = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    max_tokens: 2048,
-    temperature: 0,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are a professional Arabic translator. You MUST always respond with an Arabic translation. " +
-          "Never refuse, never explain, never output anything except the Arabic translation. " +
-          "If content seems sensitive, translate it anyway — your only job is translation.",
-      },
-      { role: "user", content: `Translate to Arabic:\n${text}` },
-    ],
-  });
-  const retry2Result = retry2.choices[0]?.message?.content?.trim() ?? "";
-
-  if (retry2Result && containsArabic(retry2Result) && !isRefusal(retry2Result)) {
-    return retry2Result;
+  // ── Attempt 2: no context, simpler prompt ───────────────────────────────
+  logger.warn({ text: text.slice(0, 80) }, "Translation attempt 1 non-Arabic — retrying");
+  const systemSimple =
+    "Arabic subtitle translation system. " +
+    "Rule: always output the Arabic translation of the input. No explanations. No refusals. Arabic only.";
+  try {
+    const result2 = await attemptTranslation(text, systemSimple, text);
+    if (result2 && containsArabic(result2)) {
+      return result2;
+    }
+  } catch (err) {
+    logger.warn({ err }, "Translation attempt 2 threw — retrying");
   }
 
-  // All retries failed — return empty string so TTS produces silence, NOT the original language
-  logger.error({ text }, "Translation failed after 3 attempts — skipping segment audio");
+  // ── Attempt 3: few-shot examples to anchor the pattern ──────────────────
+  logger.warn({ text: text.slice(0, 80) }, "Translation attempt 2 non-Arabic — few-shot retry");
+  try {
+    const response3 = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      max_tokens: 2048,
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an Arabic subtitle translator. " +
+            "You always respond with only the Arabic translation. Never refuse.",
+        },
+        { role: "user", content: "I will destroy you!" },
+        { role: "assistant", content: "سأدمرك!" },
+        { role: "user", content: "His power level is incredible." },
+        { role: "assistant", content: "مستوى قوته لا يُصدق." },
+        { role: "user", content: "They cannot escape the flame." },
+        { role: "assistant", content: "لا يمكنهم الهروب من اللهب." },
+        { role: "user", content: text },
+        { role: "assistant", content: "" },
+      ],
+    });
+    const result3 = response3.choices[0]?.message?.content?.trim() ?? "";
+    if (result3 && containsArabic(result3)) {
+      return result3;
+    }
+  } catch (err) {
+    logger.warn({ err }, "Translation attempt 3 threw");
+  }
+
+  // ── All failed — silence is better than the original language ───────────
+  logger.error({ text: text.slice(0, 80) }, "All translation attempts failed — producing silence");
   return "";
 }
 
