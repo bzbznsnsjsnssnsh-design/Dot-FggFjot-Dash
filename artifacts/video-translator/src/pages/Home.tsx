@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/select';
 import { Card } from '@/components/ui/card';
 
-const SEGMENT_DURATION = 20;
+const SEGMENT_DURATION = 50;
 const POLL_INTERVAL = 1500;
 const OFFSET_STEP = 0.1;
 const OFFSET_MIN = -2.0;

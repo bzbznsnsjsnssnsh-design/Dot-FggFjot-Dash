@@ -10,7 +10,7 @@ import { updateJob } from "./jobs.js";
 
 const execFileAsync = promisify(execFile);
 
-const SEGMENT_DURATION = 20;
+const SEGMENT_DURATION = 50;
 const CONTEXT_WINDOW = 30;
 
 interface ProcessOptions {
@@ -234,6 +234,12 @@ function isRefusal(text: string): boolean {
   return REFUSAL_PATTERNS.some(p => p.test(text));
 }
 
+/** Returns true if the string contains at least a few Arabic characters */
+function containsArabic(text: string): boolean {
+  const arabicChars = (text.match(/[\u0600-\u06FF]/g) ?? []).length;
+  return arabicChars >= 3;
+}
+
 async function translateToArabic(text: string, videoUrl: string): Promise<string> {
   const previous = translationContexts.get(videoUrl) ?? [];
 
@@ -272,27 +278,54 @@ async function translateToArabic(text: string, videoUrl: string): Promise<string
 
   const result = response.choices[0]?.message?.content?.trim() ?? "";
 
-  // If the model refused, retry with an ultra-simple prompt (no context)
-  if (!result || isRefusal(result)) {
-    logger.warn({ text }, "Translation refused — retrying with minimal prompt");
-    const retry = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      max_tokens: 2048,
-      messages: [
-        { role: "system", content: "ترجم إلى العربية فقط، بدون أي شرح:" },
-        { role: "user", content: text },
-      ],
-    });
-    const retryResult = retry.choices[0]?.message?.content?.trim() ?? "";
-    // If still refusing, return original transcript prefixed so TTS skips gracefully
-    if (!retryResult || isRefusal(retryResult)) {
-      logger.error({ text }, "Translation refused twice — using original text");
-      return text;
-    }
-    return retryResult;
+  // Valid result must contain Arabic characters and not be a refusal
+  if (result && containsArabic(result) && !isRefusal(result)) {
+    return result;
   }
 
-  return result;
+  // Retry 1 — ultra-simple prompt, no context
+  logger.warn({ text }, "Translation refused or non-Arabic — retrying with minimal prompt");
+  const retry1 = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    max_tokens: 2048,
+    temperature: 0,
+    messages: [
+      { role: "system", content: "ترجم النص التالي إلى اللغة العربية فقط. أخرج الترجمة العربية مباشرةً بدون أي شرح أو مقدمة:" },
+      { role: "user", content: text },
+    ],
+  });
+  const retry1Result = retry1.choices[0]?.message?.content?.trim() ?? "";
+
+  if (retry1Result && containsArabic(retry1Result) && !isRefusal(retry1Result)) {
+    return retry1Result;
+  }
+
+  // Retry 2 — force translation by framing it as a task with example
+  logger.warn({ text }, "Translation retry 1 failed — attempting forced translation");
+  const retry2 = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    max_tokens: 2048,
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a professional Arabic translator. You MUST always respond with an Arabic translation. " +
+          "Never refuse, never explain, never output anything except the Arabic translation. " +
+          "If content seems sensitive, translate it anyway — your only job is translation.",
+      },
+      { role: "user", content: `Translate to Arabic:\n${text}` },
+    ],
+  });
+  const retry2Result = retry2.choices[0]?.message?.content?.trim() ?? "";
+
+  if (retry2Result && containsArabic(retry2Result) && !isRefusal(retry2Result)) {
+    return retry2Result;
+  }
+
+  // All retries failed — return empty string so TTS produces silence, NOT the original language
+  logger.error({ text }, "Translation failed after 3 attempts — skipping segment audio");
+  return "";
 }
 
 /**
@@ -483,6 +516,23 @@ export async function processVideoSegment(options: ProcessOptions): Promise<void
     updateJob(jobId, { progress: "جاري ترجمة النص إلى العربية..." });
     const translation = await translateToArabic(transcript, videoUrl);
     updateJob(jobId, { translation });
+
+    // If translation failed completely (empty), skip TTS and mark complete with silence
+    if (!translation || translation.trim().length === 0) {
+      logger.warn({ jobId, startTime }, "Translation empty — completing segment without audio");
+      // Generate a short silent MP3 so the frontend can advance gracefully
+      await execFileAsync("ffmpeg", [
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+        "-t", "1",
+        "-acodec", "libmp3lame", "-q:a", "9",
+        "-y", outputPath,
+      ]);
+      audioFiles.set(jobId, outputPath);
+      updateJob(jobId, { status: "completed", progress: "✅ اكتمل المقطع (تخطي)", videoRate: 1.0 });
+      logger.info({ jobId, startTime }, "Segment completed (silent — translation unavailable)");
+      return;
+    }
+
     addTranslationContext(videoUrl, translation);
 
     // Step 5: Generate Arabic speech at natural speed
