@@ -245,7 +245,7 @@ export function VoicePicker({ voices, selectedVoice, onSelect, disabled }: Voice
                               {v.gender}
                             </span>
 
-                            {/* Preview mic button */}
+                            {/* Preview mic button — always visible */}
                             <Button
                               variant="ghost"
                               size="icon"
@@ -253,7 +253,7 @@ export function VoicePicker({ voices, selectedVoice, onSelect, disabled }: Voice
                                 `w-7 h-7 shrink-0 transition-all ` +
                                 (isBusy
                                   ? 'opacity-100 bg-primary/20'
-                                  : 'opacity-0 group-hover:opacity-100 focus:opacity-100')
+                                  : 'opacity-60 hover:opacity-100')
                               }
                               onClick={e => playPreview(e, v.id)}
                               title="استمع للصوت قبل الاختيار"

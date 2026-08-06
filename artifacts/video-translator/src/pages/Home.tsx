@@ -185,6 +185,13 @@ export default function Home() {
   const startChain = useCallback(async (fromSegment: number, signal: AbortSignal) => {
     let current = normalizeStart(fromSegment);
     while (!signal.aborted) {
+      // Stop when we've passed the actual video duration
+      const videoDuration = ytPlayerRef.current?.getDuration?.() ?? Infinity;
+      if (Number.isFinite(videoDuration) && current >= videoDuration) {
+        setPipelineVisible(false);
+        break;
+      }
+
       const key = current;
       if (!segmentCacheRef.current.has(key)) {
         try {
@@ -205,7 +212,7 @@ export default function Home() {
   }, [fetchSegment]);
 
   /**
-   * Play audio + video in sync, applying audioOffset and videoRate.
+   * Play audio + video in sync with a full seek (used for first segment or user seek).
    * offset > 0: delay audio (video starts first)
    * offset < 0: delay video (audio starts first)
    */
@@ -225,12 +232,10 @@ export default function Home() {
       audioRef.current.currentTime = 0;
 
       if (offset >= 0) {
-        // Video first, then audio after offset ms
         ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
         ytPlayerRef.current?.playVideo();
         setTimeout(() => { audioRef.current?.play().catch(() => {}); }, offset * 1000);
       } else {
-        // Audio first, then video after |offset| ms
         audioRef.current.play().catch(() => {});
         setTimeout(() => {
           ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
@@ -245,12 +250,44 @@ export default function Home() {
     }, 600);
   }, []);
 
+  /**
+   * Seamless transition to next segment (no pause, no seek delay).
+   * Used when audio ends naturally and the next segment is already cached.
+   */
+  const transitionToNext = useCallback((job: SegmentJob, key: number) => {
+    if (!audioRef.current || !job.audioUrl) return;
+    const rate = job.videoRate ?? 1.0;
+
+    isSyncingRef.current = true;
+    activeSegmentKeyRef.current = key;
+    lastTimeRef.current = key;
+
+    // Switch audio source without pausing video
+    audioRef.current.src = job.audioUrl;
+    audioRef.current.load();
+    audioRef.current.currentTime = 0;
+    audioRef.current.play().catch(() => {});
+
+    // Gently nudge video to the correct position if it drifted
+    const ytTime = ytPlayerRef.current?.getCurrentTime?.() ?? key;
+    if (Math.abs(ytTime - key) > 1.5) {
+      ytPlayerRef.current?.seekTo(key, true);
+    }
+    ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
+
+    setIsPlaying(true);
+    setTimeout(() => { isSyncingRef.current = false; }, 500);
+  }, []);
+
   const playSegment = useCallback(async (startTime: number, showLoading: boolean) => {
     const key = normalizeStart(startTime);
 
-    ytPlayerRef.current?.pauseVideo();
-    audioRef.current?.pause();
-    setIsPlaying(false);
+    // Only pause if we need to show the loading overlay or seek to a different position
+    if (showLoading) {
+      ytPlayerRef.current?.pauseVideo();
+      audioRef.current?.pause();
+      setIsPlaying(false);
+    }
 
     let job = segmentCacheRef.current.get(key);
 
@@ -267,10 +304,29 @@ export default function Home() {
           return;
         }
       } else {
-        while (!segmentCacheRef.current.has(key)) {
-          await new Promise(r => setTimeout(r, 400));
+        // Wait up to 10s for the background chain to finish this segment
+        let waited = 0;
+        while (!segmentCacheRef.current.has(key) && waited < 10000) {
+          await new Promise(r => setTimeout(r, 300));
+          waited += 300;
         }
         job = segmentCacheRef.current.get(key);
+        // If it's still not ready, pause and show loading
+        if (!job) {
+          ytPlayerRef.current?.pauseVideo();
+          audioRef.current?.pause();
+          setIsPlaying(false);
+          setShowOverlay(true);
+          setOverlayProgress('جاري تجهيز المقطع...');
+          const abortCtrl2 = new AbortController();
+          try {
+            job = await fetchSegment(key, abortCtrl2.signal, (p) => setOverlayProgress(p));
+          } catch {
+            setShowOverlay(false);
+            toast({ title: '❌ خطأ', description: 'فشل تحميل المقطع.', variant: 'destructive' });
+            return;
+          }
+        }
       }
     }
 
@@ -327,8 +383,23 @@ export default function Home() {
 
   const handleAudioEnded = useCallback(() => {
     const nextKey = activeSegmentKeyRef.current + SEGMENT_DURATION;
-    playSegment(nextKey, false);
-  }, [playSegment]);
+
+    // Check we haven't gone past the video duration
+    const videoDuration = ytPlayerRef.current?.getDuration?.() ?? Infinity;
+    if (Number.isFinite(videoDuration) && nextKey >= videoDuration) {
+      setIsPlaying(false);
+      return;
+    }
+
+    const cached = segmentCacheRef.current.get(nextKey);
+    if (cached && cached.status === 'completed') {
+      // Seamless transition — no pause, no overlay
+      transitionToNext(cached, nextKey);
+    } else {
+      // Not ready yet — wait for background chain then play
+      playSegment(nextKey, false);
+    }
+  }, [playSegment, transitionToNext]);
 
   // Seek detection
   useEffect(() => {

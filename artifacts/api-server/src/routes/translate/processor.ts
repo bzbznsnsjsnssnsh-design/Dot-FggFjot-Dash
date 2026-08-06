@@ -217,22 +217,38 @@ async function transcribeAudio(audioPath: string): Promise<string> {
   return transcription.text;
 }
 
+// Patterns that indicate the AI refused to translate instead of producing Arabic text
+const REFUSAL_PATTERNS = [
+  /لا\s*يمكن/i,
+  /لا\s*أستطيع/i,
+  /عذراً/i,
+  /I cannot/i,
+  /I'm sorry/i,
+  /I am unable/i,
+  /cannot translate/i,
+  /unable to translate/i,
+  /not able to/i,
+];
+
+function isRefusal(text: string): boolean {
+  return REFUSAL_PATTERNS.some(p => p.test(text));
+}
+
 async function translateToArabic(text: string, videoUrl: string): Promise<string> {
   const previous = translationContexts.get(videoUrl) ?? [];
 
   const systemPrompt =
-    "أنت مترجم محترف على مستوى النشر.\n" +
-    "ترجم النص التالي إلى العربية الفصحى ترجمة دقيقة وطبيعية، مع الحفاظ الكامل على المعنى والسياق والنبرة والأسلوب الأصلي.\n\n" +
-    "قد يتم تزويدك بترجمات سابقة من نفس المشروع. استخدمها كمرجع للحفاظ على الاتساق في المصطلحات والأسماء والأسلوب، مع مراعاة السياق الحالي. " +
-    "لا تنسخ الترجمة السابقة حرفيًا إلا إذا كانت الأنسب، بل اجعل الترجمة الجديدة مترابطة ومتسقة معها.\n\n" +
+    "أنت مترجم آلي. مهمتك الوحيدة هي ترجمة النص إلى العربية الفصحى.\n" +
+    "يجب أن تُخرج دائماً ترجمة عربية، حتى لو كان النص غير واضح — استخدم التقريب.\n" +
+    "لا تكتب أي شرح أو اعتذار أو تعليق، فقط الترجمة.\n\n" +
+    "قد يتم تزويدك بترجمات سابقة من نفس المشروع. استخدمها كمرجع للحفاظ على الاتساق في المصطلحات والأسماء والأسلوب، مع مراعاة السياق الحالي.\n\n" +
     "القواعد:\n" +
     "- انقل المعنى المقصود، لا الكلمات حرفيًا.\n" +
     "- استخدم عربية سليمة وسلسة.\n" +
     "- حافظ على المصطلحات نفسها طوال المشروع.\n" +
-    "- حافظ على أسماء الأشخاص والعلامات التجارية.\n" +
+    "- حافظ على أسماء الأشخاص والعلامات التجارية كما هي.\n" +
     "- لا تضف أو تحذف أي معلومات.\n" +
-    "- إذا وجدت أكثر من ترجمة صحيحة، اختر الأكثر طبيعية والأكثر توافقًا مع الترجمات السابقة.\n\n" +
-    "أخرج الترجمة فقط بدون أي شرح.";
+    "- أخرج الترجمة فقط، بدون أي مقدمة أو خاتمة أو شرح.";
 
   // Build the user message in the exact format: الترجمة السابقة / النص الجديد
   let userContent: string;
@@ -253,7 +269,30 @@ async function translateToArabic(text: string, videoUrl: string): Promise<string
       { role: "user", content: userContent },
     ],
   });
-  return response.choices[0]?.message?.content ?? text;
+
+  const result = response.choices[0]?.message?.content?.trim() ?? "";
+
+  // If the model refused, retry with an ultra-simple prompt (no context)
+  if (!result || isRefusal(result)) {
+    logger.warn({ text }, "Translation refused — retrying with minimal prompt");
+    const retry = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      max_tokens: 2048,
+      messages: [
+        { role: "system", content: "ترجم إلى العربية فقط، بدون أي شرح:" },
+        { role: "user", content: text },
+      ],
+    });
+    const retryResult = retry.choices[0]?.message?.content?.trim() ?? "";
+    // If still refusing, return original transcript prefixed so TTS skips gracefully
+    if (!retryResult || isRefusal(retryResult)) {
+      logger.error({ text }, "Translation refused twice — using original text");
+      return text;
+    }
+    return retryResult;
+  }
+
+  return result;
 }
 
 /**
@@ -270,10 +309,36 @@ export async function generatePreview(voiceId: string): Promise<string> {
 }
 
 /**
+ * Build an SSML document that forces multilingual voices to speak Arabic.
+ * For native Arabic voices, plain text is used (they always speak Arabic).
+ */
+function buildSsml(text: string, voiceId: string): string {
+  const isMultilingual = voiceId.toLowerCase().includes("multilingual");
+  if (!isMultilingual) return text; // plain text for Arabic-native voices
+
+  // Escape XML special chars in the text
+  const safe = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+  return (
+    `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' ` +
+    `xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='ar-SA'>` +
+    `<voice name='${voiceId}'>` +
+    `<lang xml:lang='ar-SA'>${safe}</lang>` +
+    `</voice></speak>`
+  );
+}
+
+/**
  * Generate speech using Microsoft Edge TTS (free, via msedge-tts npm package)
  * NOTE: msedge-tts v2 toFile() expects a DIRECTORY path, not a file path.
  * It writes the audio to {dir}/audio.mp3 internally.
  * Speed is NOT applied here — caller applies auto-calculated atempo.
+ * Multilingual voices are forced to Arabic via SSML <lang xml:lang='ar-SA'>.
  */
 async function generateEdgeTTS(
   text: string,
@@ -284,9 +349,12 @@ async function generateEdgeTTS(
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
+  // For multilingual voices, wrap in SSML to force Arabic pronunciation
+  const input = buildSsml(text, voice);
+
   // msedge-tts toFile() takes a directory; it writes audio.mp3 inside it
   const ttsDir = await mkdtemp(join(tmpdir(), "vt-tts-"));
-  await tts.toFile(ttsDir, text);
+  await tts.toFile(ttsDir, input);
   const rawPath = join(ttsDir, "audio.mp3");
 
   if (!existsSync(rawPath)) {
