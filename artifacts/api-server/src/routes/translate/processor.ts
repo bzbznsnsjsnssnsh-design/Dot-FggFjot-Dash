@@ -309,36 +309,11 @@ export async function generatePreview(voiceId: string): Promise<string> {
 }
 
 /**
- * Build an SSML document that forces multilingual voices to speak Arabic.
- * For native Arabic voices, plain text is used (they always speak Arabic).
- */
-function buildSsml(text: string, voiceId: string): string {
-  const isMultilingual = voiceId.toLowerCase().includes("multilingual");
-  if (!isMultilingual) return text; // plain text for Arabic-native voices
-
-  // Escape XML special chars in the text
-  const safe = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-
-  return (
-    `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' ` +
-    `xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='ar-SA'>` +
-    `<voice name='${voiceId}'>` +
-    `<lang xml:lang='ar-SA'>${safe}</lang>` +
-    `</voice></speak>`
-  );
-}
-
-/**
  * Generate speech using Microsoft Edge TTS (free, via msedge-tts npm package)
  * NOTE: msedge-tts v2 toFile() expects a DIRECTORY path, not a file path.
  * It writes the audio to {dir}/audio.mp3 internally.
  * Speed is NOT applied here — caller applies auto-calculated atempo.
- * Multilingual voices are forced to Arabic via SSML <lang xml:lang='ar-SA'>.
+ * Multilingual voices auto-detect Arabic from the text content (no SSML needed).
  */
 async function generateEdgeTTS(
   text: string,
@@ -349,12 +324,10 @@ async function generateEdgeTTS(
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-  // For multilingual voices, wrap in SSML to force Arabic pronunciation
-  const input = buildSsml(text, voice);
-
   // msedge-tts toFile() takes a directory; it writes audio.mp3 inside it
+  // Multilingual voices detect Arabic automatically from the Arabic text content
   const ttsDir = await mkdtemp(join(tmpdir(), "vt-tts-"));
-  await tts.toFile(ttsDir, input);
+  await tts.toFile(ttsDir, text);
   const rawPath = join(ttsDir, "audio.mp3");
 
   if (!existsSync(rawPath)) {
