@@ -39,10 +39,34 @@ function addTranslationContext(videoUrl: string, translation: string) {
 }
 
 // Direct stream URL cache: videoUrl → CDN URL (yt-dlp fetches once, ffmpeg uses directly)
-// YouTube CDN URLs expire after ~6 hours; we evict after 5h to be safe.
 const directUrlCache = new Map<string, string>();
 // In-flight URL fetches: prevents duplicate yt-dlp calls for the same video
 const directUrlInFlight = new Map<string, Promise<string>>();
+
+/**
+ * Parse the `expire` query-param from a YouTube CDN URL and return how many
+ * milliseconds until it expires. Falls back to 4 hours if not found.
+ * We subtract a 3-minute safety buffer to evict just before actual expiry.
+ */
+function cdnUrlTtlMs(cdnUrl: string): number {
+  const SAFETY_BUFFER_MS = 3 * 60 * 1000; // 3 minutes
+  const FALLBACK_MS = 4 * 60 * 60 * 1000; // 4 hours
+  try {
+    const expireStr = new URL(cdnUrl).searchParams.get("expire");
+    if (expireStr) {
+      const expireMs = parseInt(expireStr, 10) * 1000;
+      const remaining = expireMs - Date.now() - SAFETY_BUFFER_MS;
+      if (remaining > 60_000) return remaining; // at least 1 minute left
+    }
+  } catch { /* ignore malformed URLs */ }
+  return FALLBACK_MS;
+}
+
+/** Returns true if the ffmpeg error is a CDN HTTP 5XX (expired URL) */
+function isCdnExpiredError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message + (err as any).stderr : String(err);
+  return /HTTP error 5\d\d|5XX Server Error|Server returned 5|Server error/i.test(msg);
+}
 
 // VERIFIED voices — tested against Edge TTS API (only include voices that actually exist)
 const EDGE_VOICES = [
@@ -125,19 +149,17 @@ export const TTS_MODELS = [
 ];
 
 /**
- * Get the direct CDN URL for a YouTube video using yt-dlp --get-url.
- * Result is cached per videoUrl and evicted after 5 hours (CDN URLs expire ~6h).
- * Concurrent requests for the same URL share one yt-dlp call.
+ * Fetch a fresh CDN URL via yt-dlp, cache it with TTL derived from the URL's
+ * own `expire` param, and deduplicate concurrent callers.
  */
-async function getDirectUrl(videoUrl: string): Promise<string> {
-  if (directUrlCache.has(videoUrl)) {
-    return directUrlCache.get(videoUrl)!;
-  }
+async function fetchFreshDirectUrl(videoUrl: string): Promise<string> {
+  // If there's already an in-flight fetch, share it
   if (directUrlInFlight.has(videoUrl)) {
     return directUrlInFlight.get(videoUrl)!;
   }
 
   const promise = (async () => {
+    logger.info({ videoUrl }, "yt-dlp: fetching fresh CDN URL");
     const { stdout } = await execFileAsync("yt-dlp", [
       "--extractor-args", "youtube:player_client=android;formats=missing_pot",
       "-f", "18/bestaudio[ext=m4a]/bestaudio",
@@ -148,42 +170,76 @@ async function getDirectUrl(videoUrl: string): Promise<string> {
     const cdnUrl = stdout.trim().split("\n")[0];
     if (!cdnUrl) throw new Error("yt-dlp لم يُعط رابطاً مباشراً");
 
+    // Cache with TTL computed from the URL's own expire param
+    const ttl = cdnUrlTtlMs(cdnUrl);
     directUrlCache.set(videoUrl, cdnUrl);
     directUrlInFlight.delete(videoUrl);
-    // Evict after 5 hours before the URL expires
-    setTimeout(() => directUrlCache.delete(videoUrl), 5 * 60 * 60 * 1000);
+    logger.info({ videoUrl, ttlMin: Math.round(ttl / 60000) }, "CDN URL cached");
+    setTimeout(() => {
+      directUrlCache.delete(videoUrl);
+      logger.info({ videoUrl }, "CDN URL evicted from cache (expired)");
+    }, ttl);
     return cdnUrl;
   })();
 
   directUrlInFlight.set(videoUrl, promise);
+  // Clean up in-flight on error too
+  promise.catch(() => directUrlInFlight.delete(videoUrl));
   return promise;
 }
 
 /**
- * Download only the needed 20-second segment using ffmpeg directly from the CDN URL.
- * Uses the Android user-agent so YouTube CDN accepts the request.
- * No full-video download — seeks directly to startTime via HTTP range requests.
+ * Get the direct CDN URL for a YouTube video.
+ * Returns cached value if still valid, otherwise fetches a fresh one.
+ */
+async function getDirectUrl(videoUrl: string): Promise<string> {
+  if (directUrlCache.has(videoUrl)) {
+    return directUrlCache.get(videoUrl)!;
+  }
+  return fetchFreshDirectUrl(videoUrl);
+}
+
+/**
+ * Run ffmpeg to download one audio segment from the CDN URL.
+ * On HTTP 5XX (expired CDN URL): invalidates cache and retries ONCE with a
+ * fresh URL fetched via yt-dlp.
  */
 async function downloadAudioSegment(
   videoUrl: string,
   startTime: number,
   outputPath: string
 ): Promise<void> {
+  const runFfmpeg = async (cdnUrl: string) =>
+    execFileAsync("ffmpeg", [
+      "-user_agent", "com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip",
+      "-ss", String(startTime),
+      "-i", cdnUrl,
+      "-t", String(SEGMENT_DURATION + 2),
+      "-vn",
+      "-ar", "16000",
+      "-ac", "1",
+      "-acodec", "libmp3lame",
+      "-q:a", "3",
+      "-y",
+      outputPath,
+    ]);
+
   const cdnUrl = await getDirectUrl(videoUrl);
 
-  await execFileAsync("ffmpeg", [
-    "-user_agent", "com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip",
-    "-ss", String(startTime),
-    "-i", cdnUrl,
-    "-t", String(SEGMENT_DURATION + 2),
-    "-vn",
-    "-ar", "16000",
-    "-ac", "1",
-    "-acodec", "libmp3lame",
-    "-q:a", "3",
-    "-y",
-    outputPath,
-  ]);
+  try {
+    await runFfmpeg(cdnUrl);
+  } catch (err) {
+    if (isCdnExpiredError(err)) {
+      // CDN URL expired — evict cache and fetch a fresh one, then retry
+      logger.warn({ videoUrl, startTime }, "CDN URL returned 5XX — evicting cache and retrying with fresh URL");
+      directUrlCache.delete(videoUrl);
+      directUrlInFlight.delete(videoUrl);
+      const freshUrl = await fetchFreshDirectUrl(videoUrl);
+      await runFfmpeg(freshUrl);
+    } else {
+      throw err;
+    }
+  }
 
   if (!existsSync(outputPath)) {
     throw new Error("ffmpeg لم يُنشئ ملف المقطع");
