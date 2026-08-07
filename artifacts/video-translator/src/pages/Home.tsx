@@ -26,6 +26,8 @@ const POLL_INTERVAL = 1500;
 const OFFSET_STEP = 0.1;
 const OFFSET_MIN = -2.0;
 const OFFSET_MAX = 2.0;
+// If audio/video drift exceeds this, hard-correct by seeking video
+const SYNC_DRIFT_THRESHOLD = 3.0;
 
 interface SegmentJob {
   jobId: string;
@@ -240,8 +242,8 @@ export default function Home() {
   }, [fetchSegment]);
 
   /**
-   * Full seek + play (used for initial play and manual seeks only).
-   * Pauses everything, seeks video, loads audio, then plays both.
+   * Full seek + play (initial play and manual seeks only).
+   * Seeks video to segment start, loads audio from position 0, starts both.
    */
   const playSynced = useCallback((job: SegmentJob, key: number) => {
     if (!audioRef.current || !job.audioUrl) return;
@@ -250,10 +252,11 @@ export default function Home() {
     const rate = job.videoRate ?? 1.0;
     const audioUrl = getAudioUrl(key, job.audioUrl);
 
+    console.debug(`[playSynced] key=${key} rate=${rate} offset=${offset} blob=${audioUrl.startsWith('blob:')}`);
+
     isSyncingRef.current = true;
     ytPlayerRef.current?.seekTo(key, true);
 
-    // If blob is ready, set src and wait for canplaythrough for gapless start
     audioRef.current.src = audioUrl;
     audioRef.current.load();
 
@@ -274,22 +277,21 @@ export default function Home() {
       activeSegmentKeyRef.current = key;
       lastTimeRef.current = key;
       setIsPlaying(true);
-      setTimeout(() => { isSyncingRef.current = false; }, 800);
+      setTimeout(() => { isSyncingRef.current = false; }, 1000);
     };
 
-    // Wait for audio to be ready (blob is instant; direct URL may take a moment)
     const isBlobUrl = audioUrl.startsWith('blob:');
     if (isBlobUrl) {
-      setTimeout(doPlay, 150); // blob loads near-instantly
+      setTimeout(doPlay, 150);
     } else {
-      setTimeout(doPlay, 600); // fallback delay for direct URL
+      setTimeout(doPlay, 600);
     }
   }, [getAudioUrl]);
 
   /**
-   * Seamless audio-only transition (no video seek).
-   * Used when the next segment is cached AND its audio is pre-fetched as a blob.
-   * The video keeps playing uninterrupted; only the audio track switches.
+   * Seamless audio-only transition (no backward video seek).
+   * Starts audio at an offset that matches the video's current position so
+   * the two tracks stay aligned without ever seeking the video backward.
    */
   const transitionToNext = useCallback((job: SegmentJob, key: number) => {
     if (!audioRef.current || !job.audioUrl) return;
@@ -298,7 +300,6 @@ export default function Home() {
     const isBlobUrl = audioUrl.startsWith('blob:');
 
     activeSegmentKeyRef.current = key;
-    lastTimeRef.current = key;
     isSyncingRef.current = true;
 
     audioRef.current.src = audioUrl;
@@ -306,22 +307,35 @@ export default function Home() {
 
     const doPlay = () => {
       if (!audioRef.current) return;
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(() => {});
-      // Gently correct video drift if more than 1.5s off
+
       const ytTime = ytPlayerRef.current?.getCurrentTime?.() ?? key;
-      if (Math.abs(ytTime - key) > 1.5) {
+      // Offset audio so it matches where the video currently is.
+      // This prevents any backward seek: if video is at key+3, audio starts at t=3.
+      const audioStart = Math.max(0, Math.min(ytTime - key, 45)); // clamp 0–45 s
+      audioRef.current.currentTime = audioStart;
+      audioRef.current.play().catch(() => {});
+
+      // Only seek video FORWARD if it fell significantly behind the segment boundary.
+      // NEVER seek backward — that is the root cause of the backward-jump bug.
+      if (ytTime < key - 2.0) {
+        console.debug(`[transition] video behind by ${(key - ytTime).toFixed(2)}s → seeking forward to ${key}`);
         ytPlayerRef.current?.seekTo(key, true);
       }
+
+      // Update lastTimeRef to actual video position (not key) so seek-detector
+      // doesn't fire on this transition.
+      lastTimeRef.current = ytTime;
+
+      console.debug(`[transition] key=${key} ytTime=${ytTime.toFixed(2)} audioStart=${audioStart.toFixed(2)}`);
+
       ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
       setIsPlaying(true);
-      setTimeout(() => { isSyncingRef.current = false; }, 400);
+      setTimeout(() => { isSyncingRef.current = false; }, 800);
     };
 
     if (isBlobUrl) {
-      doPlay(); // already in memory, plays instantly
+      doPlay();
     } else {
-      // Direct URL fallback: wait a moment for buffering
       setTimeout(doPlay, 400);
     }
   }, [getAudioUrl]);
@@ -518,13 +532,19 @@ export default function Home() {
     }
   }, [isValid, selectedModel, selectedVoice, fetchSegment, startChain, toast, playSynced]);
 
-  // Seek detection
+  // ── Seek detection ──────────────────────────────────────────────────────────
+  // Fires only on genuine USER seeks (> 4 s jump).
+  // Gated on both isSeekingRef AND isSyncingRef so internal corrections
+  // (transitionToNext, sync monitor) never trigger a false seek.
   useEffect(() => {
     if (!hasStarted) return;
     const timer = setInterval(() => {
       if (!ytPlayerRef.current || !isPlaying) return;
+      if (isSyncingRef.current || isSeekingRef.current) return; // skip internal syncs
       const time = ytPlayerRef.current.getCurrentTime();
-      if (Math.abs(time - lastTimeRef.current) > 4 && !isSeekingRef.current) {
+      const delta = Math.abs(time - lastTimeRef.current);
+      if (delta > 4) {
+        console.debug(`[seek-detect] jump ${lastTimeRef.current.toFixed(1)}→${time.toFixed(1)} (Δ${delta.toFixed(1)}s) — treating as user seek`);
         isSeekingRef.current = true;
         const key = normalizeStart(time);
         const cached = segmentCacheRef.current.has(key);
@@ -533,15 +553,50 @@ export default function Home() {
         chainAbortRef.current?.abort();
         const abortCtrl = new AbortController();
         chainAbortRef.current = abortCtrl;
-        const nextKey = key + SEGMENT_DURATION;
-        startChain(nextKey, abortCtrl.signal);
+        startChain(key + SEGMENT_DURATION, abortCtrl.signal);
 
-        setTimeout(() => { isSeekingRef.current = false; }, 1200);
+        setTimeout(() => { isSeekingRef.current = false; }, 1500);
       }
       lastTimeRef.current = time;
     }, 500);
     return () => clearInterval(timer);
   }, [hasStarted, isPlaying, playSegment, startChain]);
+
+  // ── Continuous sync monitor ──────────────────────────────────────────────
+  // Every 2 s, compares (segmentKey + audio.currentTime) with video position.
+  // Corrects drift > SYNC_DRIFT_THRESHOLD by seeking the video to match audio.
+  // Audio is the master clock because it is finite and precisely timed.
+  useEffect(() => {
+    if (!hasStarted) return;
+    const id = setInterval(() => {
+      if (!isPlaying || isSyncingRef.current || isSeekingRef.current) return;
+      const audio = audioRef.current;
+      if (!audio || audio.paused || audio.ended || !audio.src) return;
+      const yt = ytPlayerRef.current;
+      if (!yt?.getCurrentTime) return;
+
+      const segKey = activeSegmentKeyRef.current;
+      const audioPos = audio.currentTime;
+      const expectedVideoTime = segKey + audioPos;
+      const actualVideoTime = yt.getCurrentTime();
+      const drift = actualVideoTime - expectedVideoTime; // + = video ahead of audio
+
+      console.debug(
+        `[sync] key=${segKey} audio=${audioPos.toFixed(2)}` +
+        ` expected=${expectedVideoTime.toFixed(2)} actual=${actualVideoTime.toFixed(2)}` +
+        ` drift=${drift >= 0 ? '+' : ''}${drift.toFixed(2)}`
+      );
+
+      if (Math.abs(drift) > SYNC_DRIFT_THRESHOLD) {
+        console.debug(`[sync] ⚠ correcting ${drift.toFixed(2)}s drift → seeking video to ${expectedVideoTime.toFixed(2)}`);
+        isSyncingRef.current = true;
+        yt.seekTo(expectedVideoTime, true);
+        lastTimeRef.current = expectedVideoTime; // prevent seek-detector false-fire
+        setTimeout(() => { isSyncingRef.current = false; }, 1200);
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [hasStarted, isPlaying]);
 
   const handleYoutubeStateChange = (event: any) => {
     if (isSyncingRef.current) return;
