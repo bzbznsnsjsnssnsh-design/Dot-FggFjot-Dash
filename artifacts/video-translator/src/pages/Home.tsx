@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import YouTube from 'react-youtube';
+import Hls from 'hls.js';
+import * as dashjs from 'dashjs';
 import { Play, Youtube, Settings, Wand2, RefreshCcw, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -9,6 +11,7 @@ import { useYoutubeUrl } from '@/hooks/use-youtube-url';
 import { ProcessingOverlay } from '@/components/processing-overlay';
 import { PipelineBar } from '@/components/pipeline-bar';
 import { VoicePicker } from '@/components/voice-picker';
+import { detectMediaKind, isHttpUrl, nativeVideoType, type MediaKind, type MediaProbe } from '@/lib/media-source';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -87,16 +90,29 @@ export default function Home() {
   const { url, setUrl, videoId, isValid } = useYoutubeUrl();
 
   const ytPlayerRef = useRef<any>(null);
+  const genericVideoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const dashRef = useRef<dashjs.MediaPlayerClass | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastTimeRef = useRef(0);
   const isSeekingRef = useRef(false);
   const isSyncingRef = useRef(false);
+  const isAdvancingRef = useRef(false);
+  const pendingTransitionKeyRef = useRef<number | null>(null);
   const activeSegmentKeyRef = useRef(0);
   const audioOffsetRef = useRef(0);
 
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedVoice, setSelectedVoice] = useState('');
   const [audioOffset, setAudioOffset] = useState(0.0);
+  const [videoVolume, setVideoVolume] = useState(0.3);
+  const [ttsVolume, setTtsVolume] = useState(1.0);
+  const [localFile, setLocalFile] = useState<File | null>(null);
+  const [localObjectUrl, setLocalObjectUrl] = useState<string | null>(null);
+  const [uploadedLocalUrl, setUploadedLocalUrl] = useState<string | null>(null);
+  const [mediaProbe, setMediaProbe] = useState<MediaProbe | null>(null);
+  const [mediaProbeLoading, setMediaProbeLoading] = useState(false);
+  const [mediaError, setMediaError] = useState('');
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
@@ -119,6 +135,43 @@ export default function Home() {
   const { data: modelsData, isLoading: isLoadingModels } = useGetTtsModels();
 
   const normalizeStart = (t: number) => Math.floor(t / SEGMENT_DURATION) * SEGMENT_DURATION;
+  const isYouTubeSource = !!videoId;
+  const detectedKind = useMemo<MediaKind>(() => detectMediaKind(url), [url]);
+  const remotePlayable = !isYouTubeSource && !!mediaProbe && mediaProbe.kind !== 'unknown';
+  const mediaKind = isYouTubeSource ? 'youtube' : (localFile ? 'direct' : (mediaProbe?.kind ?? detectedKind));
+  const genericSourceUrl = localObjectUrl
+    ?? uploadedLocalUrl
+    ?? (remotePlayable && mediaProbe?.needsTranscode
+      ? `/api/media/transcode?url=${encodeURIComponent(mediaProbe.finalUrl || url)}`
+      : (remotePlayable ? (mediaProbe?.finalUrl || url) : ''));
+  const mediaReady = isYouTubeSource || !!localFile && !!genericSourceUrl || remotePlayable && !!genericSourceUrl;
+  const processingSource = isYouTubeSource
+    ? url
+    : (uploadedLocalUrl || mediaProbe?.finalUrl || url);
+  const getMediaTime = useCallback(() => {
+    if (isYouTubeSource) return ytPlayerRef.current?.getCurrentTime?.() ?? 0;
+    return genericVideoRef.current?.currentTime ?? 0;
+  }, [isYouTubeSource]);
+  const getMediaDuration = useCallback(() => {
+    if (isYouTubeSource) return ytPlayerRef.current?.getDuration?.() ?? Infinity;
+    return genericVideoRef.current?.duration || Infinity;
+  }, [isYouTubeSource]);
+  const playMedia = useCallback(() => {
+    if (isYouTubeSource) ytPlayerRef.current?.playVideo?.();
+    else genericVideoRef.current?.play().catch(err => console.debug('[media] play rejected', err));
+  }, [isYouTubeSource]);
+  const pauseMedia = useCallback(() => {
+    if (isYouTubeSource) ytPlayerRef.current?.pauseVideo?.();
+    else genericVideoRef.current?.pause();
+  }, [isYouTubeSource]);
+  const seekMedia = useCallback((time: number) => {
+    if (isYouTubeSource) ytPlayerRef.current?.seekTo?.(time, true);
+    else if (genericVideoRef.current) genericVideoRef.current.currentTime = time;
+  }, [isYouTubeSource]);
+  const setMediaRate = useCallback((rate: number) => {
+    if (isYouTubeSource) ytPlayerRef.current?.setPlaybackRate?.(rate);
+    else if (genericVideoRef.current) genericVideoRef.current.playbackRate = rate;
+  }, [isYouTubeSource]);
 
   useEffect(() => { audioOffsetRef.current = audioOffset; }, [audioOffset]);
 
@@ -155,6 +208,134 @@ export default function Home() {
     setPipelineDone(false);
   }, [url]);
 
+  // Probe non-YouTube URLs on the server so content type, not only the
+  // extension, determines the playback engine.
+  useEffect(() => {
+    if (localFile || !url || isYouTubeSource || !isHttpUrl(url)) {
+      setMediaProbe(null);
+      setMediaProbeLoading(false);
+      setMediaError('');
+      return;
+    }
+
+    const controller = new AbortController();
+    setMediaProbeLoading(true);
+    setMediaError('');
+    fetch(`/api/media/probe?url=${encodeURIComponent(url)}`, { signal: controller.signal })
+      .then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'تعذر فحص مصدر الفيديو');
+        return data as MediaProbe;
+      })
+      .then(probe => {
+        if (!controller.signal.aborted) setMediaProbe(probe);
+      })
+      .catch(err => {
+        if (!controller.signal.aborted) {
+          setMediaProbe(null);
+          setMediaError(err instanceof Error ? err.message : 'تعذر فحص الرابط');
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setMediaProbeLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [url, isYouTubeSource, localFile]);
+
+  // Keep a local preview URL, and upload a server copy for the translation
+  // worker as well. Unsupported containers are converted to MP4 server-side.
+  useEffect(() => {
+    if (!localFile) {
+      setLocalObjectUrl(null);
+      setUploadedLocalUrl(null);
+      return;
+    }
+
+    setMediaError('');
+    setUploadedLocalUrl(null);
+    let cancelled = false;
+    const objectUrl = nativeVideoType(localFile) ? URL.createObjectURL(localFile) : null;
+    setLocalObjectUrl(objectUrl);
+    setMediaProbeLoading(true);
+    fetch(`/api/media/upload?filename=${encodeURIComponent(localFile.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': localFile.type || 'application/octet-stream' },
+      body: localFile,
+    })
+      .then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'تعذر تحويل ملف الفيديو');
+        return data as { url: string };
+      })
+      .then(data => {
+        if (!cancelled) setUploadedLocalUrl(data.url);
+      })
+      .catch(err => {
+        if (!cancelled) setMediaError(err instanceof Error ? err.message : 'تعذر تشغيل ملف الفيديو');
+      })
+      .finally(() => {
+        if (!cancelled) setMediaProbeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [localFile]);
+
+  // Select the correct media engine for direct files, HLS and DASH.
+  useEffect(() => {
+    const video = genericVideoRef.current;
+    if (isYouTubeSource || !video || !genericSourceUrl) return;
+
+    hlsRef.current?.destroy();
+    hlsRef.current = null;
+    dashRef.current?.reset();
+    dashRef.current = null;
+    video.removeAttribute('src');
+    video.load();
+
+    if (mediaKind === 'hls') {
+      if (Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (data.fatal) {
+            console.error('[media] HLS fatal error', data);
+            setMediaError('تعذر تشغيل بث HLS');
+          }
+        });
+        hls.loadSource(genericSourceUrl);
+        hls.attachMedia(video);
+        hlsRef.current = hls;
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = genericSourceUrl;
+      } else {
+        setMediaError('هذا المتصفح لا يدعم تشغيل HLS');
+      }
+    } else if (mediaKind === 'dash') {
+      const player = dashjs.MediaPlayer().create();
+      player.initialize(video, genericSourceUrl, false);
+      dashRef.current = player;
+    } else {
+      video.src = genericSourceUrl;
+    }
+
+    return () => {
+      hlsRef.current?.destroy();
+      hlsRef.current = null;
+      dashRef.current?.reset();
+      dashRef.current = null;
+      video.removeAttribute('src');
+      video.load();
+    };
+  }, [genericSourceUrl, mediaKind, isYouTubeSource]);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = ttsVolume;
+    if (genericVideoRef.current) genericVideoRef.current.volume = videoVolume;
+    if (ytPlayerRef.current?.setVolume) ytPlayerRef.current.setVolume(videoVolume * 100);
+  }, [ttsVolume, videoVolume]);
+
   /**
    * Pre-fetch audio file as blob so it's in memory before it's needed.
    * Stored by segment key. Called right after a segment completes.
@@ -184,6 +365,10 @@ export default function Home() {
     pipelineUpdate = false
   ): Promise<SegmentJob> => {
     const key = normalizeStart(startTime);
+    const existing = inFlightRef.current.get(key);
+    if (existing) return existing;
+
+    const work = (async (): Promise<SegmentJob> => {
     const label = `${formatTime(key)} – ${formatTime(key + SEGMENT_DURATION)}`;
 
     if (pipelineUpdate) {
@@ -192,7 +377,7 @@ export default function Home() {
       setPipelineProgress('جاري استخراج الصوت...');
     }
 
-    const jobId = await requestSegment(url, key, selectedModel, selectedVoice);
+    const jobId = await requestSegment(processingSource, key, selectedModel, selectedVoice);
 
     const job = await pollJob(jobId, (p) => {
       onProgress?.(p);
@@ -210,36 +395,37 @@ export default function Home() {
     }
 
     return job;
-  }, [url, selectedModel, selectedVoice, prefetchAudioBlob]);
+    })();
 
-  const startChain = useCallback(async (fromSegment: number, signal: AbortSignal) => {
-    let current = normalizeStart(fromSegment);
-    while (!signal.aborted) {
-      // Stop when we've passed the actual video duration
-      const videoDuration = ytPlayerRef.current?.getDuration?.() ?? Infinity;
-      if (Number.isFinite(videoDuration) && current >= videoDuration) {
-        setPipelineVisible(false);
-        break;
-      }
-
-      const key = current;
-      if (!segmentCacheRef.current.has(key)) {
-        try {
-          furthestQueuedRef.current = key;
-          await fetchSegment(key, signal, undefined, true);
-        } catch {
-          if (signal.aborted) break;
-          await new Promise<void>(r => setTimeout(r, 3000));
-          continue;
-        }
-      }
-      current += SEGMENT_DURATION;
-      await new Promise<void>(r => {
-        const t = setTimeout(r, 300);
-        signal.addEventListener('abort', () => { clearTimeout(t); r(); }, { once: true });
-      });
+    inFlightRef.current.set(key, work);
+    try {
+      return await work;
+    } finally {
+      inFlightRef.current.delete(key);
     }
-  }, [fetchSegment]);
+  }, [processingSource, selectedModel, selectedVoice, prefetchAudioBlob]);
+
+  // Prepare exactly one segment ahead. The current segment is already playing
+  // (or being fetched by playSegment); this function must never walk through
+  // the entire video in the background.
+  const startChain = useCallback(async (fromSegment: number, signal: AbortSignal) => {
+    const key = normalizeStart(fromSegment);
+    const videoDuration = getMediaDuration();
+    if (signal.aborted || (Number.isFinite(videoDuration) && key >= videoDuration)) {
+      setPipelineVisible(false);
+      return;
+    }
+    if (segmentCacheRef.current.has(key) || inFlightRef.current.has(key)) return;
+
+    furthestQueuedRef.current = key;
+    try {
+      await fetchSegment(key, signal, undefined, true);
+    } catch (err) {
+      if (!signal.aborted) {
+        console.error(`[pipeline] ahead segment ${key} failed`, err);
+      }
+    }
+  }, [fetchSegment, getMediaDuration]);
 
   /**
    * Full seek + play (initial play and manual seeks only).
@@ -255,7 +441,7 @@ export default function Home() {
     console.debug(`[playSynced] key=${key} rate=${rate} offset=${offset} blob=${audioUrl.startsWith('blob:')}`);
 
     isSyncingRef.current = true;
-    ytPlayerRef.current?.seekTo(key, true);
+    seekMedia(key);
 
     audioRef.current.src = audioUrl;
     audioRef.current.load();
@@ -264,14 +450,14 @@ export default function Home() {
       if (!audioRef.current) return;
       audioRef.current.currentTime = 0;
       if (offset >= 0) {
-        ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
-        ytPlayerRef.current?.playVideo();
+        setMediaRate(rate < 1.0 ? rate : 1.0);
+        playMedia();
         setTimeout(() => { audioRef.current?.play().catch(() => {}); }, offset * 1000);
       } else {
         audioRef.current.play().catch(() => {});
         setTimeout(() => {
-          ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
-          ytPlayerRef.current?.playVideo();
+          setMediaRate(rate < 1.0 ? rate : 1.0);
+          playMedia();
         }, -offset * 1000);
       }
       activeSegmentKeyRef.current = key;
@@ -286,13 +472,11 @@ export default function Home() {
     } else {
       setTimeout(doPlay, 600);
     }
-  }, [getAudioUrl]);
+  }, [getAudioUrl, playMedia, seekMedia, setMediaRate]);
 
-  /**
-   * Seamless audio-only transition (no backward video seek).
-   * Starts audio at an offset that matches the video's current position so
-   * the two tracks stay aligned without ever seeking the video backward.
-   */
+  /** Switch the TTS track at the video's current position. The YouTube player
+   * is the master clock during continuous playback; this function never seeks
+   * it, which removes the source of automatic backward/forward jumps. */
   const transitionToNext = useCallback((job: SegmentJob, key: number) => {
     if (!audioRef.current || !job.audioUrl) return;
     const rate = job.videoRate ?? 1.0;
@@ -308,27 +492,18 @@ export default function Home() {
     const doPlay = () => {
       if (!audioRef.current) return;
 
-      const ytTime = ytPlayerRef.current?.getCurrentTime?.() ?? key;
-      // Offset audio so it matches where the video currently is.
-      // This prevents any backward seek: if video is at key+3, audio starts at t=3.
-      const audioStart = Math.max(0, Math.min(ytTime - key, 45)); // clamp 0–45 s
+      const ytTime = getMediaTime();
+      const audioStart = Math.max(0, Math.min(ytTime - key, SEGMENT_DURATION - 0.2));
       audioRef.current.currentTime = audioStart;
-      audioRef.current.play().catch(() => {});
-
-      // Only seek video FORWARD if it fell significantly behind the segment boundary.
-      // NEVER seek backward — that is the root cause of the backward-jump bug.
-      if (ytTime < key - 2.0) {
-        console.debug(`[transition] video behind by ${(key - ytTime).toFixed(2)}s → seeking forward to ${key}`);
-        ytPlayerRef.current?.seekTo(key, true);
-      }
-
-      // Update lastTimeRef to actual video position (not key) so seek-detector
-      // doesn't fire on this transition.
+      audioRef.current.play().catch(err => {
+        console.debug('[transition] audio play was rejected', err);
+      });
       lastTimeRef.current = ytTime;
+      pendingTransitionKeyRef.current = null;
 
       console.debug(`[transition] key=${key} ytTime=${ytTime.toFixed(2)} audioStart=${audioStart.toFixed(2)}`);
 
-      ytPlayerRef.current?.setPlaybackRate(rate < 1.0 ? rate : 1.0);
+      setMediaRate(rate < 1.0 ? rate : 1.0);
       setIsPlaying(true);
       setTimeout(() => { isSyncingRef.current = false; }, 800);
     };
@@ -338,93 +513,88 @@ export default function Home() {
     } else {
       setTimeout(doPlay, 400);
     }
-  }, [getAudioUrl]);
+  }, [getAudioUrl, getMediaTime, setMediaRate]);
 
-  /**
-   * Handle audio ending: decide how to move to the next segment.
-   * - If next segment is cached + blob ready → seamless transition (video never pauses)
-   * - If next segment is cached + blob still loading → short wait then switch
-   * - If next segment not yet cached → pause video + wait silently (no overlay)
-   *   Once ready, seek video back to correct position and play
-   */
-  const handleAudioEnded = useCallback(async () => {
-    const nextKey = activeSegmentKeyRef.current + SEGMENT_DURATION;
+  const advanceToNext = useCallback(async (nextKey: number) => {
+    if (isAdvancingRef.current) return;
+    isAdvancingRef.current = true;
+    try {
+      const videoDuration = getMediaDuration();
+      if (Number.isFinite(videoDuration) && nextKey >= videoDuration) {
+        audioRef.current?.pause();
+        pauseMedia();
+        setIsPlaying(false);
+        return;
+      }
 
-    // Stop at end of video
-    const videoDuration = ytPlayerRef.current?.getDuration?.() ?? Infinity;
-    if (Number.isFinite(videoDuration) && nextKey >= videoDuration) {
-      setIsPlaying(false);
-      ytPlayerRef.current?.pauseVideo();
-      return;
-    }
-
-    const cached = segmentCacheRef.current.get(nextKey);
-
-    if (cached?.status === 'completed' && cached.audioUrl) {
-      // Check if blob URL is ready
-      const blobUrl = blobUrlCacheRef.current.get(nextKey);
-      if (blobUrl) {
-        // ✅ Best case: blob in memory → instant, seamless transition
-        transitionToNext(cached, nextKey);
-      } else {
-        // Blob still downloading — wait up to 2s for it
+      const cached = segmentCacheRef.current.get(nextKey);
+      if (cached?.status === 'completed' && cached.audioUrl) {
         let waited = 0;
         while (!blobUrlCacheRef.current.has(nextKey) && waited < 2000) {
           await new Promise(r => setTimeout(r, 100));
           waited += 100;
         }
         transitionToNext(cached, nextKey);
-      }
-      return;
-    }
-
-    // Segment not ready yet — pause video silently and wait
-    ytPlayerRef.current?.pauseVideo();
-    setIsPlaying(false);
-
-    // Wait for background chain to finish (up to 60s)
-    let waited = 0;
-    while (!segmentCacheRef.current.has(nextKey) && waited < 60000) {
-      await new Promise(r => setTimeout(r, 500));
-      waited += 500;
-    }
-
-    const readyJob = segmentCacheRef.current.get(nextKey);
-    if (!readyJob || readyJob.status === 'failed') {
-      // Last resort: request this segment directly with overlay
-      setShowOverlay(true);
-      setOverlayProgress('جاري تجهيز المقطع...');
-      try {
-        const abortCtrl = new AbortController();
-        const job = await fetchSegment(nextKey, abortCtrl.signal, (p) => setOverlayProgress(p));
-        setShowOverlay(false);
-        if (job.status === 'completed') {
-          playSynced(job, nextKey);
-        } else {
-          toast({ title: '❌ فشل المقطع', variant: 'destructive' });
+        // Once the prepared segment becomes current, prepare exactly one more.
+        if (chainAbortRef.current && !chainAbortRef.current.signal.aborted) {
+          void startChain(nextKey + SEGMENT_DURATION, chainAbortRef.current.signal);
         }
-      } catch {
-        setShowOverlay(false);
-        toast({ title: '❌ خطأ في تحميل المقطع', variant: 'destructive' });
+        return;
       }
+
+      // Hold the video at the boundary while the one-ahead segment finishes.
+      pauseMedia();
+      audioRef.current?.pause();
+      setIsPlaying(false);
+      pendingTransitionKeyRef.current = nextKey;
+
+      let waited = 0;
+      while (!segmentCacheRef.current.has(nextKey) && waited < 60000) {
+        await new Promise(r => setTimeout(r, 500));
+        waited += 500;
+      }
+
+      const readyJob = segmentCacheRef.current.get(nextKey);
+      if (readyJob?.status === 'completed' && readyJob.audioUrl) {
+        let blobWaited = 0;
+        while (!blobUrlCacheRef.current.has(nextKey) && blobWaited < 2000) {
+          await new Promise(r => setTimeout(r, 100));
+          blobWaited += 100;
+        }
+        transitionToNext(readyJob, nextKey);
+        playMedia();
+        if (chainAbortRef.current && !chainAbortRef.current.signal.aborted) {
+          void startChain(nextKey + SEGMENT_DURATION, chainAbortRef.current.signal);
+        }
+      } else {
+        pendingTransitionKeyRef.current = null;
+        toast({ title: '❌ تعذر تجهيز المقطع التالي', description: 'تحقق من الرابط وحاول إعادة التشغيل.', variant: 'destructive' });
+      }
+    } finally {
+      isAdvancingRef.current = false;
+    }
+  }, [getMediaDuration, pauseMedia, playMedia, startChain, toast, transitionToNext]);
+
+  /**
+   * Audio ending is not itself a reason to seek the video. If TTS ends a little
+   * early, wait for the video clock to reach the boundary; the sync monitor
+   * calls advanceToNext there.
+   */
+  const handleAudioEnded = useCallback(async () => {
+    const nextKey = activeSegmentKeyRef.current + SEGMENT_DURATION;
+    const ytTime = getMediaTime();
+    if (ytTime < nextKey - 0.75) {
+      pendingTransitionKeyRef.current = nextKey;
+      console.debug(`[audio-ended] TTS ended early at ${ytTime.toFixed(2)}; waiting for boundary ${nextKey}`);
       return;
     }
-
-    // Segment is now ready — play it (video was paused at current position)
-    setShowOverlay(false);
-    // Wait for blob pre-fetch (it may have just completed)
-    let blobWaited = 0;
-    while (!blobUrlCacheRef.current.has(nextKey) && blobWaited < 2000) {
-      await new Promise(r => setTimeout(r, 100));
-      blobWaited += 100;
-    }
-    playSynced(readyJob, nextKey);
-  }, [transitionToNext, fetchSegment, playSynced, toast]);
+    await advanceToNext(nextKey);
+  }, [advanceToNext, getMediaTime]);
 
   const playSegment = useCallback(async (startTime: number, showLoading: boolean) => {
     const key = normalizeStart(startTime);
 
-    ytPlayerRef.current?.pauseVideo();
+    pauseMedia();
     audioRef.current?.pause();
     setIsPlaying(false);
 
@@ -480,10 +650,10 @@ export default function Home() {
     }
 
     playSynced(job, key);
-  }, [fetchSegment, toast, playSynced]);
+  }, [fetchSegment, pauseMedia, toast, playSynced]);
 
   const handleInitialPlay = useCallback(async () => {
-    if (!isValid || !selectedModel || !selectedVoice) {
+    if (!mediaReady || !selectedModel || !selectedVoice) {
       toast({ title: 'بيانات ناقصة', description: 'تأكد من الرابط والنموذج والصوت.', variant: 'destructive' });
       return;
     }
@@ -494,7 +664,7 @@ export default function Home() {
     blobUrlCacheRef.current.clear();
     inFlightRef.current.clear();
 
-    const time = ytPlayerRef.current?.getCurrentTime() || 0;
+    const time = getMediaTime();
     setHasStarted(true);
     setShowOverlay(true);
     setOverlayProgress('جاري استخراج الصوت...');
@@ -530,7 +700,7 @@ export default function Home() {
       setShowOverlay(false);
       toast({ title: '❌ خطأ في الاتصال', variant: 'destructive' });
     }
-  }, [isValid, selectedModel, selectedVoice, fetchSegment, startChain, toast, playSynced]);
+  }, [mediaReady, getMediaTime, selectedModel, selectedVoice, fetchSegment, startChain, toast, playSynced]);
 
   // ── Seek detection ──────────────────────────────────────────────────────────
   // Fires only on genuine USER seeks (> 4 s jump).
@@ -539,9 +709,9 @@ export default function Home() {
   useEffect(() => {
     if (!hasStarted) return;
     const timer = setInterval(() => {
-      if (!ytPlayerRef.current || !isPlaying) return;
+      if (!isPlaying || (!ytPlayerRef.current && !genericVideoRef.current)) return;
       if (isSyncingRef.current || isSeekingRef.current) return; // skip internal syncs
-      const time = ytPlayerRef.current.getCurrentTime();
+      const time = getMediaTime();
       const delta = Math.abs(time - lastTimeRef.current);
       if (delta > 4) {
         console.debug(`[seek-detect] jump ${lastTimeRef.current.toFixed(1)}→${time.toFixed(1)} (Δ${delta.toFixed(1)}s) — treating as user seek`);
@@ -560,25 +730,35 @@ export default function Home() {
       lastTimeRef.current = time;
     }, 500);
     return () => clearInterval(timer);
-  }, [hasStarted, isPlaying, playSegment, startChain]);
+  }, [hasStarted, isPlaying, getMediaTime, playSegment, startChain]);
 
   // ── Continuous sync monitor ──────────────────────────────────────────────
-  // Every 2 s, compares (segmentKey + audio.currentTime) with video position.
-  // Corrects drift > SYNC_DRIFT_THRESHOLD by seeking the video to match audio.
-  // Audio is the master clock because it is finite and precisely timed.
+  // The YouTube player is the master clock. We correct the finite TTS track
+  // to the video position, never the other way around, so sync can never
+  // create a backward/forward YouTube jump.
   useEffect(() => {
     if (!hasStarted) return;
     const id = setInterval(() => {
-      if (!isPlaying || isSyncingRef.current || isSeekingRef.current) return;
+      if (!isPlaying || isSyncingRef.current || isSeekingRef.current || isAdvancingRef.current) return;
       const audio = audioRef.current;
-      if (!audio || audio.paused || audio.ended || !audio.src) return;
-      const yt = ytPlayerRef.current;
-      if (!yt?.getCurrentTime) return;
+      if (!ytPlayerRef.current && !genericVideoRef.current) return;
 
       const segKey = activeSegmentKeyRef.current;
+      const actualVideoTime = getMediaTime();
+      const nextKey = segKey + SEGMENT_DURATION;
+
+      if (pendingTransitionKeyRef.current === nextKey || actualVideoTime >= nextKey - 0.5) {
+        void advanceToNext(nextKey);
+        return;
+      }
+
+      if (!audio || audio.paused || audio.ended || !audio.src) {
+        console.debug(`[sync] audio unavailable key=${segKey} video=${actualVideoTime.toFixed(2)}`);
+        return;
+      }
+
       const audioPos = audio.currentTime;
       const expectedVideoTime = segKey + audioPos;
-      const actualVideoTime = yt.getCurrentTime();
       const drift = actualVideoTime - expectedVideoTime; // + = video ahead of audio
 
       console.debug(
@@ -588,15 +768,20 @@ export default function Home() {
       );
 
       if (Math.abs(drift) > SYNC_DRIFT_THRESHOLD) {
-        console.debug(`[sync] ⚠ correcting ${drift.toFixed(2)}s drift → seeking video to ${expectedVideoTime.toFixed(2)}`);
+        const correctedAudioTime = Math.max(0, Math.min(
+          actualVideoTime - segKey,
+          Math.max(0, (audio.duration || SEGMENT_DURATION) - 0.1),
+        ));
+        console.debug(`[sync] correcting audio by ${drift.toFixed(2)}s → audio.currentTime=${correctedAudioTime.toFixed(2)}`);
         isSyncingRef.current = true;
-        yt.seekTo(expectedVideoTime, true);
-        lastTimeRef.current = expectedVideoTime; // prevent seek-detector false-fire
-        setTimeout(() => { isSyncingRef.current = false; }, 1200);
+        audio.currentTime = correctedAudioTime;
+        audio.play().catch(err => console.debug('[sync] audio resume rejected', err));
+        lastTimeRef.current = actualVideoTime;
+        setTimeout(() => { isSyncingRef.current = false; }, 250);
       }
     }, 2000);
     return () => clearInterval(id);
-  }, [hasStarted, isPlaying]);
+  }, [hasStarted, isPlaying, advanceToNext, getMediaTime]);
 
   const handleYoutubeStateChange = (event: any) => {
     if (isSyncingRef.current) return;
@@ -611,6 +796,35 @@ export default function Home() {
         audioRef.current.pause();
       }
     }
+  };
+
+  const handleYoutubeReady = (event: any) => {
+    ytPlayerRef.current = event.target;
+    event.target.setVolume(videoVolume * 100);
+  };
+
+  const handleLocalFile = (file: File | undefined) => {
+    if (!file) return;
+    chainAbortRef.current?.abort();
+    audioRef.current?.pause();
+    setUrl('');
+    setLocalFile(file);
+    setHasStarted(false);
+    setIsPlaying(false);
+    setShowOverlay(false);
+    setPipelineVisible(false);
+  };
+
+  const handleGenericPlay = () => {
+    setIsPlaying(true);
+    if (audioRef.current?.src && audioRef.current.paused && !audioRef.current.ended) {
+      audioRef.current.play().catch(err => console.debug('[media] audio resume rejected', err));
+    }
+  };
+
+  const handleGenericPause = () => {
+    setIsPlaying(false);
+    audioRef.current?.pause();
   };
 
   const adjustOffset = (delta: number) => {
@@ -684,41 +898,78 @@ export default function Home() {
               dir="ltr"
               placeholder="https://www.youtube.com/watch?v=..."
               value={url}
-              onChange={e => setUrl(e.target.value)}
+              onChange={e => {
+                setLocalFile(null);
+                setUrl(e.target.value);
+              }}
               className="pr-12 py-6 text-lg bg-card/60 border-border/50 backdrop-blur focus-visible:ring-primary/50 text-left font-mono placeholder:text-right placeholder:font-sans"
               disabled={showOverlay}
             />
           </div>
-          {!isValid && url.length > 0 && (
+          <div className="flex items-center justify-between gap-3 mt-3">
+            <label className="inline-flex cursor-pointer items-center rounded-md border border-border/50 bg-card/50 px-3 py-2 text-xs text-muted-foreground hover:bg-card">
+              اختر ملف فيديو من الجهاز
+              <input
+                type="file"
+                className="sr-only"
+                accept="video/*,.mkv,.avi,.mov,.flv,.webm,.mp4"
+                disabled={showOverlay}
+                onChange={e => handleLocalFile(e.target.files?.[0])}
+              />
+            </label>
+            {localFile && (
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{localFile.name}</span>
+            )}
+          </div>
+          {mediaProbeLoading && !localFile && (
+            <p className="text-muted-foreground text-xs mt-2 text-right">جاري فحص مصدر الفيديو...</p>
+          )}
+          {mediaError && (
+            <p className="text-destructive text-xs mt-2 text-right">{mediaError}</p>
+          )}
+          {!isValid && url.length > 0 && !localFile && !mediaProbe && (
             <p className="text-destructive text-xs mt-2 text-right">
-              الرابط المدخل غير صحيح، يرجى إدخال رابط يوتيوب صالح.
+              أدخل رابط YouTube أو رابط فيديو مباشر أو بث HLS/DASH صالح.
             </p>
           )}
         </motion.div>
 
         <AnimatePresence>
-          {isValid && videoId && (
+          {mediaReady && (
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               className="space-y-5"
             >
-              {/* YouTube player */}
+              {/* YouTube or generic media player */}
               <Card className="overflow-hidden border-border/50 bg-card/60 backdrop-blur">
                 <div className="aspect-video w-full">
-                  <YouTube
-                    videoId={videoId}
-                    className="w-full h-full"
-                    iframeClassName="w-full h-full"
-                    opts={{
-                      width: '100%',
-                      height: '100%',
-                      playerVars: { autoplay: 0, controls: 1, rel: 0 },
-                    }}
-                    onReady={e => { ytPlayerRef.current = e.target; }}
-                    onStateChange={handleYoutubeStateChange}
-                  />
+                  {isYouTubeSource ? (
+                    <YouTube
+                      videoId={videoId}
+                      className="w-full h-full"
+                      iframeClassName="w-full h-full"
+                      opts={{
+                        width: '100%',
+                        height: '100%',
+                        playerVars: { autoplay: 0, controls: 1, rel: 0 },
+                      }}
+                      onReady={handleYoutubeReady}
+                      onStateChange={handleYoutubeStateChange}
+                    />
+                  ) : (
+                    <video
+                      ref={genericVideoRef}
+                      className="h-full w-full bg-black object-contain"
+                      controls
+                      playsInline
+                      preload="metadata"
+                      onPlay={handleGenericPlay}
+                      onPause={handleGenericPause}
+                      onError={() => setMediaError('تعذر تشغيل هذا المصدر في المتصفح')}
+                    />
+                  )}
                 </div>
               </Card>
 
@@ -759,8 +1010,42 @@ export default function Home() {
                   />
                 </div>
 
+                {/* Independent volume controls */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 mt-5">
+                  <label className="text-xs text-muted-foreground font-medium">
+                    مستوى صوت الفيديو
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={videoVolume}
+                        onChange={e => setVideoVolume(Number(e.target.value))}
+                        className="w-full accent-primary"
+                      />
+                      <span className="w-10 text-left font-mono">{Math.round(videoVolume * 100)}%</span>
+                    </div>
+                  </label>
+                  <label className="text-xs text-muted-foreground font-medium">
+                    مستوى صوت الدبلجة
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={ttsVolume}
+                        onChange={e => setTtsVolume(Number(e.target.value))}
+                        className="w-full accent-primary"
+                      />
+                      <span className="w-10 text-left font-mono">{Math.round(ttsVolume * 100)}%</span>
+                    </div>
+                  </label>
+                </div>
+
                 {/* Audio offset control */}
-                <div className="mt-4">
+                {isYouTubeSource && <div className="mt-4">
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-xs text-muted-foreground font-medium">تزامن الصوت</label>
                     <span className="text-xs text-muted-foreground">
@@ -810,12 +1095,18 @@ export default function Home() {
                     <span className="text-center opacity-50">كل ضغطة = 0.1 ث</span>
                     <span>تأخير →</span>
                   </div>
-                </div>
+                </div>}
 
                 {/* Play button */}
                 <Button
                   onClick={handleInitialPlay}
-                  disabled={showOverlay || !selectedModel || !selectedVoice || isLoadingModels}
+                  disabled={
+                    showOverlay
+                    || !mediaReady
+                    || mediaProbeLoading
+                    || (!isYouTubeSource && !!localFile && !uploadedLocalUrl)
+                    || (isYouTubeSource && (!selectedModel || !selectedVoice || isLoadingModels))
+                  }
                   className="w-full mt-5 py-6 text-base font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
                 >
                   {showOverlay ? (
@@ -837,7 +1128,7 @@ export default function Home() {
         </AnimatePresence>
 
         {/* Info cards */}
-        {!isValid && (
+        {!mediaReady && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -845,7 +1136,7 @@ export default function Home() {
             className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4"
           >
             {[
-              { icon: '🎬', title: 'أدخل رابط يوتيوب', desc: 'الصق رابط أي فيديو يوتيوب في الحقل أعلاه' },
+              { icon: '🎬', title: 'أدخل مصدر الفيديو', desc: 'الصق رابط YouTube أو رابط فيديو مباشر أو اختر ملفاً من جهازك' },
               { icon: '🎙️', title: 'اختر الصوت', desc: 'اختر من أصوات مايكروسوفت أو جوجل المجانية' },
               { icon: '🔊', title: 'استمع بالعربية', desc: 'يُترجم الصوت تلقائياً مع تزامن الفيديو' },
             ].map((item, i) => (

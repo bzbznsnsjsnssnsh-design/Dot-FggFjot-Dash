@@ -246,6 +246,51 @@ async function downloadAudioSegment(
   }
 }
 
+function isYoutubeSource(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "youtu.be" || host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com");
+  } catch {
+    return false;
+  }
+}
+
+function resolveProcessingSource(source: string): string {
+  if (source.startsWith("/")) {
+    const port = process.env.PORT || "8080";
+    return `http://127.0.0.1:${port}${source}`;
+  }
+  return source;
+}
+
+/** Extract audio from a browser-uploaded file URL or a public MP4/HLS/DASH
+ * source. ffmpeg handles all of these protocols and containers directly. */
+async function downloadGenericAudioSegment(
+  source: string,
+  startTime: number,
+  outputPath: string,
+): Promise<void> {
+  await execFileAsync("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-user_agent", "Mozilla/5.0",
+    "-ss", String(startTime),
+    "-i", resolveProcessingSource(source),
+    "-t", String(SEGMENT_DURATION + 2),
+    "-vn",
+    "-ar", "16000",
+    "-ac", "1",
+    "-acodec", "libmp3lame",
+    "-q:a", "3",
+    "-y",
+    outputPath,
+  ]);
+
+  if (!existsSync(outputPath)) {
+    throw new Error("ffmpeg لم يُنشئ ملف المقطع");
+  }
+}
+
 async function cleanAudioWithFfmpeg(inputPath: string, outputPath: string): Promise<void> {
   await execFileAsync("ffmpeg", [
     "-i", inputPath,
@@ -570,15 +615,21 @@ export async function processVideoSegment(options: ProcessOptions): Promise<void
   const outputPath = join(tmpDir, "output.mp3");
 
   try {
-    // Step 1: Get CDN URL (once per video) then download only the needed segment
-    const needsUrlFetch = !directUrlCache.has(videoUrl) && !directUrlInFlight.has(videoUrl);
+    // Step 1: Download only the needed segment. YouTube uses its CDN URL
+    // cache; other supported media sources go directly through ffmpeg.
+    const youtubeSource = isYoutubeSource(videoUrl);
+    const needsUrlFetch = youtubeSource && !directUrlCache.has(videoUrl) && !directUrlInFlight.has(videoUrl);
     updateJob(jobId, {
       status: "processing",
       progress: needsUrlFetch
         ? "جاري الحصول على رابط الصوت من يوتيوب..."
         : "جاري تنزيل مقطع الصوت..."
     });
-    await downloadAudioSegment(videoUrl, startTime, rawAudioPath);
+    if (youtubeSource) {
+      await downloadAudioSegment(videoUrl, startTime, rawAudioPath);
+    } else {
+      await downloadGenericAudioSegment(videoUrl, startTime, rawAudioPath);
+    }
 
     // Step 2: Clean audio
     updateJob(jobId, { progress: "جاري تنقية الصوت..." });
