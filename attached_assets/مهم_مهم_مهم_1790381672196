@@ -1,0 +1,478 @@
+Work directly inside the existing project. Do not create a new project.
+
+The prompt is in English for accuracy, but the entire user-facing product must be Arabic-only with RTL layout.
+
+MAIN GOAL
+
+Add a new, independent OpenAI Arabic Dubbing system while preserving the existing dubbing system.
+
+Also fix the existing dubbing problems already identified in the project.
+
+Optimize the work for minimum practical Replit Agent usage:
+
+Inspect only necessary files.
+
+Do not repeatedly re-read unchanged files.
+
+Do not rebuild working code.
+
+Batch related changes into the fewest practical Agent execution cycles.
+
+Batch related OpenAI requests when technically valid.
+
+Do not run unnecessary tests.
+
+Do not stop to ask for approval.
+
+Do not add unrelated features.
+
+Do not perform unrelated refactoring.
+
+EXISTING IMPORTANT FILES
+
+Start by inspecting the real implementation, especially:
+
+artifacts/video-translator/src/pages/Home.tsx
+
+artifacts/api-server/src/routes/translate/index.ts
+
+artifacts/api-server/src/routes/translate/processor.ts
+
+artifacts/api-server/src/routes/translate/jobs.ts
+
+artifacts/api-server/src/routes/media/index.ts
+
+Also inspect directly related components when necessary.
+
+Do not assume the current behavior; verify it from the code.
+
+1. PRESERVE THE OLD SYSTEM
+
+The existing dubbing system must remain.
+
+Do not:
+
+delete it,
+
+replace it,
+
+migrate it to OpenAI,
+
+remove its providers,
+
+break its UI,
+
+break existing pages.
+
+The new OpenAI system must be separate.
+
+Reuse existing shared UI/player infrastructure when practical.
+
+2. NEW OPENAI DUBBING SYSTEM
+
+Create a new section/page inside the existing application.
+
+The user must be able to:
+
+provide a video source,
+
+play the video,
+
+start Arabic dubbing,
+
+select a supported OpenAI TTS voice,
+
+preview that same voice,
+
+control original-video volume,
+
+control Arabic dubbing volume,
+
+seek,
+
+control playback speed where supported,
+
+start dubbing from a selected position.
+
+All user-facing text must be Arabic and RTL.
+
+3. OPENAI ONLY FOR AI TASKS
+
+For the new system use OpenAI for:
+
+speech-to-text,
+
+contextual understanding,
+
+Arabic translation,
+
+Arabic text preparation,
+
+dubbing/TTS,
+
+intelligent timing analysis when useful.
+
+Do not use:
+
+Edge TTS,
+
+Google TTS,
+
+Gemini,
+
+Meta AI,
+
+another AI translation provider,
+
+another AI speech-to-text provider,
+
+another AI TTS provider.
+
+Do not invent unsupported OpenAI features.
+
+For normal programming operations such as video playback, Blob management, caching, timing arithmetic, and React state, use the existing project code and normal programming logic.
+
+4. MINIMIZE OPENAI REQUESTS INSIDE THE APP
+
+Do not send one AI request per sentence when related sentences can be processed together.
+
+Prefer:
+
+related utterances + context + timing → one structured OpenAI request → result mapped to stable IDs.
+
+Reuse the result in later stages.
+
+Do not retranslate, reanalyze, or regenerate data that has not changed.
+
+Use stable IDs such as:
+
+segment_id
+
+utterance_id
+
+Do not depend on array indexes as permanent IDs.
+
+5. TRANSLATION AND TEXT PREPARATION
+
+Arabic must be:
+
+natural,
+
+modern,
+
+clear,
+
+easy to listen to,
+
+suitable for dubbing,
+
+faithful to meaning and emotion,
+
+consistent in names and terminology.
+
+Use GPT to prepare long dialogue for speech when necessary:
+
+shorten unnecessary wording,
+
+improve spoken phrasing,
+
+split long sentences,
+
+preserve meaning.
+
+Do not change meaning just to reduce duration.
+
+6. OPENAI TTS
+
+Use OpenAI TTS for final Arabic dubbing.
+
+The preview must use the exact same OpenAI voice selected for final dubbing.
+
+Do not create fake voice options.
+
+If an OpenAI capability is unavailable, handle the limitation honestly rather than inventing support or switching providers.
+
+7. SEGMENTS
+
+Keep the existing segment architecture when practical.
+
+Each segment should have stable data for:
+
+segment ID,
+
+start/end time,
+
+utterance IDs,
+
+original text,
+
+Arabic text,
+
+TTS text,
+
+audio,
+
+timing data,
+
+synchronization state,
+
+processing state,
+
+error state.
+
+Process the current segment while preparing the next one in the background.
+
+8. FIX THE KNOWN SEGMENT PROBLEMS
+
+Early transition
+
+If Arabic audio ends before the video segment ends, do NOT immediately move to the next segment.
+
+Transition must follow the actual video timeline and valid synchronization data.
+
+Seek
+
+If the user seeks to 07:13, do not snap back to 07:00.
+
+Keep the exact requested position, find the correct segment, calculate the internal offset, and synchronize the Arabic audio to that exact position.
+
+videoRate
+
+Synchronization must correctly account for the real video playback rate.
+
+Never assume videoRate = 1.0.
+
+Use:
+
+current video time,
+
+current audio time,
+
+segment start,
+
+segment end,
+
+audio duration,
+
+audio offset,
+
+manual offset,
+
+video rate,
+
+speech timing.
+
+Prefetch race conditions
+
+If the user seeks while the next segment is processing, obsolete background results must not overwrite the new playback state.
+
+Use stable IDs/versioning to invalidate stale work.
+
+9. FIX MEMORY AND CACHE GROWTH
+
+The current analysis found that old segments, audio references, and Blob URLs can remain in memory.
+
+Fix this.
+
+Keep only what is needed:
+
+current segment,
+
+next segment,
+
+required metadata.
+
+Release obsolete:
+
+audio references,
+
+Blob URLs,
+
+segment objects,
+
+stale processing state.
+
+Memory must not continuously grow during long videos.
+
+Do not create an unlimited cache.
+
+10. FIX JOB/PROCESSING STATE
+
+Inspect the existing job system.
+
+Improve only what is necessary for reliable operation.
+
+Do not redesign the whole architecture.
+
+If important state is currently only temporary in memory, fix the specific reliability problems that affect the new dubbing flow.
+
+11. ERROR HANDLING
+
+If an OpenAI operation fails:
+
+show a clear Arabic error,
+
+retry when appropriate,
+
+preserve valid current state,
+
+do not switch to another AI provider.
+
+A failed segment must not break the whole player.
+
+12. EFFICIENCY RULES FOR REPLIT AGENT
+
+Treat this as one large implementation task.
+
+Use the fewest practical Agent cycles.
+
+Preferred workflow:
+
+Stage 1
+
+Inspect only the necessary files and identify all affected code.
+
+Stage 2
+
+Implement the new OpenAI system and related segment/prefetch logic together.
+
+Stage 3
+
+Fix synchronization, Seek, transition, videoRate, and stale async work together.
+
+Stage 4
+
+Fix memory/cache/jobs/error handling together.
+
+Stage 5
+
+Run one consolidated validation.
+
+Do not create separate Agent tasks for each tiny issue.
+
+Do not repeatedly inspect the entire project.
+
+Do not rewrite complete files for small changes.
+
+Do not run unrelated tests.
+
+If an error appears, fix the affected area immediately and continue.
+
+13. VALIDATION
+
+Validate the important scenarios together:
+
+long video,
+
+multiple segment transitions,
+
+audio ending before video,
+
+video ending before audio,
+
+Seek to 07:13,
+
+forward Seek,
+
+backward Seek,
+
+changed video speed,
+
+manual audio offset,
+
+voice change,
+
+voice preview,
+
+failed segment,
+
+retry,
+
+stale prefetch,
+
+cache cleanup,
+
+long-session memory behavior,
+
+old dubbing system still working.
+
+Do not repeat tests if the related code did not change.
+
+14. STRICT RULES
+
+No new project.
+
+No deleted features.
+
+No replacement of the old dubbing system.
+
+No unrelated refactoring.
+
+No fake OpenAI capabilities.
+
+No AI-provider fallback.
+
+No unnecessary AI requests.
+
+No repeated translation of unchanged text.
+
+No repeated TTS generation of unchanged audio.
+
+No repeated analysis of unchanged data.
+
+No unlimited cache.
+
+No early segment transitions.
+
+No forced Seek back to segment start.
+
+No incorrect synchronization when video speed changes.
+
+No user-facing English UI.
+
+15. FINAL EXECUTION RULE
+
+Do not stop for approval.
+
+Do not explain every step.
+
+Implement the largest correct group of related changes in each Agent cycle.
+
+Prefer:
+
+one large correct implementation pass
+
+over:
+
+many small Agent tasks.
+
+Prefer:
+
+one contextual OpenAI request
+
+over:
+
+many repeated AI requests, when technically valid.
+
+Prefer:
+
+reuse
+
+over:
+
+rebuild.
+
+At the end, give a concise report of:
+
+files changed,
+
+major changes,
+
+bugs fixed,
+
+validation performed,
+
+real limitations, if any.
+
+Do not claim something is fixed unless it was actually implemented and verified.
+

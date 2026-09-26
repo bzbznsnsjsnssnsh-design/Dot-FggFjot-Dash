@@ -11,6 +11,8 @@ tags:
     description: Health operations
   - name: translate
     description: Video translation operations
+  - name: openai-dubbing
+    description: Independent OpenAI-powered dubbing operations
 paths:
   /healthz:
     get:
@@ -115,6 +117,216 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TtsModelsResponse"
+
+  /openai-dubbing/options:
+    get:
+      operationId: getOpenAiDubbingOptions
+      tags: [openai-dubbing]
+      summary: Get supported OpenAI dubbing models and voices
+      responses:
+        "200":
+          description: OpenAI dubbing options
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenAiDubbingOptions"
+
+  /openai-dubbing/jobs:
+    post:
+      operationId: createOpenAiDubbingJob
+      tags: [openai-dubbing]
+      summary: Create an OpenAI dubbing segment job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOpenAiDubbingJobRequest"
+      responses:
+        "202":
+          description: Job queued for processing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOpenAiDubbingJobResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /openai-dubbing/jobs/{jobId}:
+    get:
+      operationId: getOpenAiDubbingJob
+      tags: [openai-dubbing]
+      summary: Get OpenAI dubbing job and segment data
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dubbing job state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenAiDubbingJob"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /openai-dubbing/jobs/{jobId}/cancel:
+    post:
+      operationId: cancelOpenAiDubbingJob
+      tags: [openai-dubbing]
+      summary: Cancel a pending or running OpenAI dubbing job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelOpenAiDubbingJobResponse"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /openai-dubbing/jobs/{jobId}/audio:
+    get:
+      operationId: getOpenAiDubbingAudio
+      tags: [openai-dubbing]
+      summary: Stream synthesized OpenAI dubbing audio
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: MP3 audio
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Audio not ready or not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /openai-dubbing/preview:
+    post:
+      operationId: previewOpenAiDubbingVoice
+      tags: [openai-dubbing]
+      summary: Generate an OpenAI TTS voice preview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewOpenAiDubbingVoiceRequest"
+      responses:
+        "200":
+          description: MP3 voice preview
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid voice or text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /openai-dubbing/upload:
+    post:
+      operationId: uploadOpenAiDubbingMedia
+      tags: [openai-dubbing]
+      summary: Upload a video to persistent private media storage
+      parameters:
+        - name: filename
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Video stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadOpenAiDubbingMediaResponse"
+        "400":
+          description: Invalid video file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /openai-dubbing/media/{mediaId}:
+    get:
+      operationId: getOpenAiDubbingMedia
+      tags: [openai-dubbing]
+      summary: Stream uploaded video with byte-range support
+      parameters:
+        - name: mediaId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Video stream
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: Partial video stream
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Video not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   schemas:
@@ -249,3 +461,209 @@ components:
       required:
         - error
         - message
+
+    OpenAiDubbingModel:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+      required: [id, name]
+
+    OpenAiDubbingVoice:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+      required: [id, name]
+
+    OpenAiDubbingOptions:
+      type: object
+      properties:
+        sttModels:
+          type: array
+          items:
+            $ref: "#/components/schemas/OpenAiDubbingModel"
+        textModels:
+          type: array
+          items:
+            $ref: "#/components/schemas/OpenAiDubbingModel"
+        ttsModel:
+          type: string
+        voices:
+          type: array
+          items:
+            $ref: "#/components/schemas/OpenAiDubbingVoice"
+      required: [sttModels, textModels, ttsModel, voices]
+
+    CreateOpenAiDubbingJobRequest:
+      type: object
+      properties:
+        sourceUrl:
+          type: string
+        startTime:
+          type: number
+          minimum: 0
+        sttModel:
+          type: string
+          enum: [gpt-4o-mini-transcribe]
+        translationModel:
+          type: string
+        preparationModel:
+          type: string
+        analysisModel:
+          type: string
+        voice:
+          type: string
+          enum: [alloy, echo, fable, onyx, nova, shimmer]
+        videoRate:
+          type: number
+          minimum: 0.5
+          maximum: 2
+        audioSpeed:
+          type: number
+          minimum: 0.75
+          maximum: 1.5
+        manualOffset:
+          type: number
+          minimum: -5
+          maximum: 5
+        maxSegmentSeconds:
+          type: number
+          minimum: 15
+          maximum: 55
+      required:
+        - sourceUrl
+        - startTime
+        - sttModel
+        - translationModel
+        - preparationModel
+        - analysisModel
+        - voice
+        - videoRate
+        - audioSpeed
+        - manualOffset
+        - maxSegmentSeconds
+
+    CreateOpenAiDubbingJobResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+        segmentId:
+          type: string
+        status:
+          type: string
+          enum: [pending]
+        startTime:
+          type: number
+      required: [jobId, segmentId, status, startTime]
+
+    OpenAiSpeechTiming:
+      type: object
+      properties:
+        utteranceId:
+          type: string
+        startTime:
+          type: number
+        endTime:
+          type: number
+        originalText:
+          type: string
+        arabicText:
+          type: string
+      required: [utteranceId, startTime, endTime, originalText, arabicText]
+
+    OpenAiDubbingJob:
+      type: object
+      properties:
+        jobId:
+          type: string
+        segmentId:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed, cancelled]
+        progress:
+          type: string
+        startTime:
+          type: number
+        endTime:
+          type: number
+          nullable: true
+        originalText:
+          type: string
+          nullable: true
+        arabicText:
+          type: string
+          nullable: true
+        preparedText:
+          type: string
+          nullable: true
+        speechTimings:
+          type: array
+          items:
+            $ref: "#/components/schemas/OpenAiSpeechTiming"
+        synchronizationData:
+          type: object
+          additionalProperties: true
+        audioUrl:
+          type: string
+          nullable: true
+        audioDuration:
+          type: number
+          nullable: true
+        videoRate:
+          type: number
+        audioSpeed:
+          type: number
+        error:
+          type: string
+          nullable: true
+      required:
+        - jobId
+        - segmentId
+        - status
+        - progress
+        - startTime
+        - speechTimings
+        - synchronizationData
+        - videoRate
+        - audioSpeed
+
+    CancelOpenAiDubbingJobResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+          enum: [cancelled]
+      required: [jobId, status]
+
+    PreviewOpenAiDubbingVoiceRequest:
+      type: object
+      properties:
+        voice:
+          type: string
+          enum: [alloy, echo, fable, onyx, nova, shimmer]
+        text:
+          type: string
+          maxLength: 500
+      required: [voice]
+
+    UploadOpenAiDubbingMediaResponse:
+      type: object
+      properties:
+        mediaId:
+          type: string
+        sourceUrl:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+      required: [mediaId, sourceUrl, contentType, size]

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import YouTube from 'react-youtube';
 import Hls from 'hls.js';
 import * as dashjs from 'dashjs';
-import { Play, Youtube, Settings, Wand2, RefreshCcw, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
+import { Play, Youtube, Settings, Wand2, RefreshCcw, ChevronLeft, ChevronRight, RotateCcw, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { useToast } from '@/hooks/use-toast';
@@ -883,6 +883,14 @@ export default function Home() {
           <p className="text-muted-foreground text-sm">
             دبلجة فيديوهات يوتيوب إلى العربية بالذكاء الاصطناعي — مجاناً
           </p>
+          <a
+            href="/openai-dubbing"
+            data-testid="link-openai-dubbing"
+            className="mt-4 inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/20"
+          >
+            <Sparkles className="h-4 w-4" />
+            مساحة الدبلجة العربية
+          </a>
         </motion.div>
 
         {/* URL input */}

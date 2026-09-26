@@ -17,12 +17,20 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  CancelOpenAiDubbingJobResponse,
+  CreateOpenAiDubbingJobRequest,
+  CreateOpenAiDubbingJobResponse,
   ErrorResponse,
   HealthStatus,
   JobStatusResponse,
+  OpenAiDubbingJob,
+  OpenAiDubbingOptions,
+  PreviewOpenAiDubbingVoiceRequest,
   ProcessVideoRequest,
   ProcessVideoResponse,
   TtsModelsResponse,
+  UploadOpenAiDubbingMediaParams,
+  UploadOpenAiDubbingMediaResponse,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -436,6 +444,719 @@ export function useGetTtsModels<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetTtsModelsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get supported OpenAI dubbing models and voices
+ */
+export const getGetOpenAiDubbingOptionsUrl = () => {
+  return `/api/openai-dubbing/options`;
+};
+
+export const getOpenAiDubbingOptions = async (
+  options?: RequestInit,
+): Promise<OpenAiDubbingOptions> => {
+  return customFetch<OpenAiDubbingOptions>(getGetOpenAiDubbingOptionsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOpenAiDubbingOptionsQueryKey = () => {
+  return [`/api/openai-dubbing/options`] as const;
+};
+
+export const getGetOpenAiDubbingOptionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingOptions>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getOpenAiDubbingOptions>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetOpenAiDubbingOptionsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getOpenAiDubbingOptions>>
+  > = ({ signal }) => getOpenAiDubbingOptions({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOpenAiDubbingOptions>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOpenAiDubbingOptionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOpenAiDubbingOptions>>
+>;
+export type GetOpenAiDubbingOptionsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get supported OpenAI dubbing models and voices
+ */
+
+export function useGetOpenAiDubbingOptions<
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingOptions>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getOpenAiDubbingOptions>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOpenAiDubbingOptionsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Create an OpenAI dubbing segment job
+ */
+export const getCreateOpenAiDubbingJobUrl = () => {
+  return `/api/openai-dubbing/jobs`;
+};
+
+export const createOpenAiDubbingJob = async (
+  createOpenAiDubbingJobRequest: CreateOpenAiDubbingJobRequest,
+  options?: RequestInit,
+): Promise<CreateOpenAiDubbingJobResponse> => {
+  return customFetch<CreateOpenAiDubbingJobResponse>(
+    getCreateOpenAiDubbingJobUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(createOpenAiDubbingJobRequest),
+    },
+  );
+};
+
+export const getCreateOpenAiDubbingJobMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createOpenAiDubbingJob>>,
+    TError,
+    { data: BodyType<CreateOpenAiDubbingJobRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createOpenAiDubbingJob>>,
+  TError,
+  { data: BodyType<CreateOpenAiDubbingJobRequest> },
+  TContext
+> => {
+  const mutationKey = ["createOpenAiDubbingJob"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createOpenAiDubbingJob>>,
+    { data: BodyType<CreateOpenAiDubbingJobRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createOpenAiDubbingJob(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateOpenAiDubbingJobMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createOpenAiDubbingJob>>
+>;
+export type CreateOpenAiDubbingJobMutationBody =
+  BodyType<CreateOpenAiDubbingJobRequest>;
+export type CreateOpenAiDubbingJobMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Create an OpenAI dubbing segment job
+ */
+export const useCreateOpenAiDubbingJob = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createOpenAiDubbingJob>>,
+    TError,
+    { data: BodyType<CreateOpenAiDubbingJobRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createOpenAiDubbingJob>>,
+  TError,
+  { data: BodyType<CreateOpenAiDubbingJobRequest> },
+  TContext
+> => {
+  return useMutation(getCreateOpenAiDubbingJobMutationOptions(options));
+};
+
+/**
+ * @summary Get OpenAI dubbing job and segment data
+ */
+export const getGetOpenAiDubbingJobUrl = (jobId: string) => {
+  return `/api/openai-dubbing/jobs/${jobId}`;
+};
+
+export const getOpenAiDubbingJob = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<OpenAiDubbingJob> => {
+  return customFetch<OpenAiDubbingJob>(getGetOpenAiDubbingJobUrl(jobId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOpenAiDubbingJobQueryKey = (jobId: string) => {
+  return [`/api/openai-dubbing/jobs/${jobId}`] as const;
+};
+
+export const getGetOpenAiDubbingJobQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingJob>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOpenAiDubbingJob>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetOpenAiDubbingJobQueryKey(jobId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getOpenAiDubbingJob>>
+  > = ({ signal }) => getOpenAiDubbingJob(jobId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!jobId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOpenAiDubbingJob>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOpenAiDubbingJobQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOpenAiDubbingJob>>
+>;
+export type GetOpenAiDubbingJobQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get OpenAI dubbing job and segment data
+ */
+
+export function useGetOpenAiDubbingJob<
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingJob>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOpenAiDubbingJob>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOpenAiDubbingJobQueryOptions(jobId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Cancel a pending or running OpenAI dubbing job
+ */
+export const getCancelOpenAiDubbingJobUrl = (jobId: string) => {
+  return `/api/openai-dubbing/jobs/${jobId}/cancel`;
+};
+
+export const cancelOpenAiDubbingJob = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<CancelOpenAiDubbingJobResponse> => {
+  return customFetch<CancelOpenAiDubbingJobResponse>(
+    getCancelOpenAiDubbingJobUrl(jobId),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getCancelOpenAiDubbingJobMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof cancelOpenAiDubbingJob>>,
+    TError,
+    { jobId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof cancelOpenAiDubbingJob>>,
+  TError,
+  { jobId: string },
+  TContext
+> => {
+  const mutationKey = ["cancelOpenAiDubbingJob"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof cancelOpenAiDubbingJob>>,
+    { jobId: string }
+  > = (props) => {
+    const { jobId } = props ?? {};
+
+    return cancelOpenAiDubbingJob(jobId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CancelOpenAiDubbingJobMutationResult = NonNullable<
+  Awaited<ReturnType<typeof cancelOpenAiDubbingJob>>
+>;
+
+export type CancelOpenAiDubbingJobMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Cancel a pending or running OpenAI dubbing job
+ */
+export const useCancelOpenAiDubbingJob = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof cancelOpenAiDubbingJob>>,
+    TError,
+    { jobId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof cancelOpenAiDubbingJob>>,
+  TError,
+  { jobId: string },
+  TContext
+> => {
+  return useMutation(getCancelOpenAiDubbingJobMutationOptions(options));
+};
+
+/**
+ * @summary Stream synthesized OpenAI dubbing audio
+ */
+export const getGetOpenAiDubbingAudioUrl = (jobId: string) => {
+  return `/api/openai-dubbing/jobs/${jobId}/audio`;
+};
+
+export const getOpenAiDubbingAudio = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<Blob> => {
+  return customFetch<Blob>(getGetOpenAiDubbingAudioUrl(jobId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOpenAiDubbingAudioQueryKey = (jobId: string) => {
+  return [`/api/openai-dubbing/jobs/${jobId}/audio`] as const;
+};
+
+export const getGetOpenAiDubbingAudioQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingAudio>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOpenAiDubbingAudio>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetOpenAiDubbingAudioQueryKey(jobId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getOpenAiDubbingAudio>>
+  > = ({ signal }) =>
+    getOpenAiDubbingAudio(jobId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!jobId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOpenAiDubbingAudio>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOpenAiDubbingAudioQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOpenAiDubbingAudio>>
+>;
+export type GetOpenAiDubbingAudioQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Stream synthesized OpenAI dubbing audio
+ */
+
+export function useGetOpenAiDubbingAudio<
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingAudio>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOpenAiDubbingAudio>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOpenAiDubbingAudioQueryOptions(jobId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Generate an OpenAI TTS voice preview
+ */
+export const getPreviewOpenAiDubbingVoiceUrl = () => {
+  return `/api/openai-dubbing/preview`;
+};
+
+export const previewOpenAiDubbingVoice = async (
+  previewOpenAiDubbingVoiceRequest: PreviewOpenAiDubbingVoiceRequest,
+  options?: RequestInit,
+): Promise<Blob> => {
+  return customFetch<Blob>(getPreviewOpenAiDubbingVoiceUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(previewOpenAiDubbingVoiceRequest),
+  });
+};
+
+export const getPreviewOpenAiDubbingVoiceMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewOpenAiDubbingVoice>>,
+    TError,
+    { data: BodyType<PreviewOpenAiDubbingVoiceRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof previewOpenAiDubbingVoice>>,
+  TError,
+  { data: BodyType<PreviewOpenAiDubbingVoiceRequest> },
+  TContext
+> => {
+  const mutationKey = ["previewOpenAiDubbingVoice"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof previewOpenAiDubbingVoice>>,
+    { data: BodyType<PreviewOpenAiDubbingVoiceRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return previewOpenAiDubbingVoice(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type PreviewOpenAiDubbingVoiceMutationResult = NonNullable<
+  Awaited<ReturnType<typeof previewOpenAiDubbingVoice>>
+>;
+export type PreviewOpenAiDubbingVoiceMutationBody =
+  BodyType<PreviewOpenAiDubbingVoiceRequest>;
+export type PreviewOpenAiDubbingVoiceMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Generate an OpenAI TTS voice preview
+ */
+export const usePreviewOpenAiDubbingVoice = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewOpenAiDubbingVoice>>,
+    TError,
+    { data: BodyType<PreviewOpenAiDubbingVoiceRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof previewOpenAiDubbingVoice>>,
+  TError,
+  { data: BodyType<PreviewOpenAiDubbingVoiceRequest> },
+  TContext
+> => {
+  return useMutation(getPreviewOpenAiDubbingVoiceMutationOptions(options));
+};
+
+/**
+ * @summary Upload a video to persistent private media storage
+ */
+export const getUploadOpenAiDubbingMediaUrl = (
+  params: UploadOpenAiDubbingMediaParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/openai-dubbing/upload?${stringifiedParams}`
+    : `/api/openai-dubbing/upload`;
+};
+
+export const uploadOpenAiDubbingMedia = async (
+  uploadOpenAiDubbingMediaBody: Blob,
+  params: UploadOpenAiDubbingMediaParams,
+  options?: RequestInit,
+): Promise<UploadOpenAiDubbingMediaResponse> => {
+  return customFetch<UploadOpenAiDubbingMediaResponse>(
+    getUploadOpenAiDubbingMediaUrl(params),
+    {
+      ...options,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        ...options?.headers,
+      },
+      body: JSON.stringify(uploadOpenAiDubbingMediaBody),
+    },
+  );
+};
+
+export const getUploadOpenAiDubbingMediaMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadOpenAiDubbingMedia>>,
+    TError,
+    { data: BodyType<Blob>; params: UploadOpenAiDubbingMediaParams },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadOpenAiDubbingMedia>>,
+  TError,
+  { data: BodyType<Blob>; params: UploadOpenAiDubbingMediaParams },
+  TContext
+> => {
+  const mutationKey = ["uploadOpenAiDubbingMedia"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadOpenAiDubbingMedia>>,
+    { data: BodyType<Blob>; params: UploadOpenAiDubbingMediaParams }
+  > = (props) => {
+    const { data, params } = props ?? {};
+
+    return uploadOpenAiDubbingMedia(data, params, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadOpenAiDubbingMediaMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadOpenAiDubbingMedia>>
+>;
+export type UploadOpenAiDubbingMediaMutationBody = BodyType<Blob>;
+export type UploadOpenAiDubbingMediaMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Upload a video to persistent private media storage
+ */
+export const useUploadOpenAiDubbingMedia = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadOpenAiDubbingMedia>>,
+    TError,
+    { data: BodyType<Blob>; params: UploadOpenAiDubbingMediaParams },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadOpenAiDubbingMedia>>,
+  TError,
+  { data: BodyType<Blob>; params: UploadOpenAiDubbingMediaParams },
+  TContext
+> => {
+  return useMutation(getUploadOpenAiDubbingMediaMutationOptions(options));
+};
+
+/**
+ * @summary Stream uploaded video with byte-range support
+ */
+export const getGetOpenAiDubbingMediaUrl = (mediaId: string) => {
+  return `/api/openai-dubbing/media/${mediaId}`;
+};
+
+export const getOpenAiDubbingMedia = async (
+  mediaId: string,
+  options?: RequestInit,
+): Promise<Blob> => {
+  return customFetch<Blob>(getGetOpenAiDubbingMediaUrl(mediaId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOpenAiDubbingMediaQueryKey = (mediaId: string) => {
+  return [`/api/openai-dubbing/media/${mediaId}`] as const;
+};
+
+export const getGetOpenAiDubbingMediaQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingMedia>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  mediaId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOpenAiDubbingMedia>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetOpenAiDubbingMediaQueryKey(mediaId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getOpenAiDubbingMedia>>
+  > = ({ signal }) =>
+    getOpenAiDubbingMedia(mediaId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!mediaId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOpenAiDubbingMedia>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOpenAiDubbingMediaQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOpenAiDubbingMedia>>
+>;
+export type GetOpenAiDubbingMediaQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Stream uploaded video with byte-range support
+ */
+
+export function useGetOpenAiDubbingMedia<
+  TData = Awaited<ReturnType<typeof getOpenAiDubbingMedia>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  mediaId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOpenAiDubbingMedia>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOpenAiDubbingMediaQueryOptions(mediaId, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

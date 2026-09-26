@@ -6,12 +6,30 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./cancelOpenAiDubbingJobResponse";
+export * from "./cancelOpenAiDubbingJobResponseStatus";
+export * from "./createOpenAiDubbingJobRequest";
+export * from "./createOpenAiDubbingJobRequestSttModel";
+export * from "./createOpenAiDubbingJobRequestVoice";
+export * from "./createOpenAiDubbingJobResponse";
+export * from "./createOpenAiDubbingJobResponseStatus";
 export * from "./errorResponse";
 export * from "./healthStatus";
 export * from "./jobStatusResponse";
 export * from "./jobStatusResponseStatus";
+export * from "./openAiDubbingJob";
+export * from "./openAiDubbingJobStatus";
+export * from "./openAiDubbingJobSynchronizationData";
+export * from "./openAiDubbingModel";
+export * from "./openAiDubbingOptions";
+export * from "./openAiDubbingVoice";
+export * from "./openAiSpeechTiming";
+export * from "./previewOpenAiDubbingVoiceRequest";
+export * from "./previewOpenAiDubbingVoiceRequestVoice";
 export * from "./processVideoRequest";
 export * from "./processVideoResponse";
 export * from "./ttsModel";
 export * from "./ttsModelsResponse";
 export * from "./ttsVoice";
+export * from "./uploadOpenAiDubbingMediaParams";
+export * from "./uploadOpenAiDubbingMediaResponse";

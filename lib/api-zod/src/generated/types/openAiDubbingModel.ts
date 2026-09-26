@@ -6,10 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface TtsVoice {
+export interface OpenAiDubbingModel {
   id: string;
   name: string;
-  gender: string;
-  /** Language/locale code for grouping voices */
-  locale: string;
 }

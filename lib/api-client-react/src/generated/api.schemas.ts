@@ -53,6 +53,8 @@ export interface TtsVoice {
   id: string;
   name: string;
   gender: string;
+  /** Language/locale code for grouping voices */
+  locale: string;
 }
 
 export interface TtsModel {
@@ -69,3 +71,165 @@ export interface ErrorResponse {
   error: string;
   message: string;
 }
+
+export interface OpenAiDubbingModel {
+  id: string;
+  name: string;
+}
+
+export interface OpenAiDubbingVoice {
+  id: string;
+  name: string;
+}
+
+export interface OpenAiDubbingOptions {
+  sttModels: OpenAiDubbingModel[];
+  textModels: OpenAiDubbingModel[];
+  ttsModel: string;
+  voices: OpenAiDubbingVoice[];
+}
+
+export type CreateOpenAiDubbingJobRequestSttModel =
+  (typeof CreateOpenAiDubbingJobRequestSttModel)[keyof typeof CreateOpenAiDubbingJobRequestSttModel];
+
+export const CreateOpenAiDubbingJobRequestSttModel = {
+  "gpt-4o-mini-transcribe": "gpt-4o-mini-transcribe",
+} as const;
+
+export type CreateOpenAiDubbingJobRequestVoice =
+  (typeof CreateOpenAiDubbingJobRequestVoice)[keyof typeof CreateOpenAiDubbingJobRequestVoice];
+
+export const CreateOpenAiDubbingJobRequestVoice = {
+  alloy: "alloy",
+  echo: "echo",
+  fable: "fable",
+  onyx: "onyx",
+  nova: "nova",
+  shimmer: "shimmer",
+} as const;
+
+export interface CreateOpenAiDubbingJobRequest {
+  sourceUrl: string;
+  /** @minimum 0 */
+  startTime: number;
+  sttModel: CreateOpenAiDubbingJobRequestSttModel;
+  translationModel: string;
+  preparationModel: string;
+  analysisModel: string;
+  voice: CreateOpenAiDubbingJobRequestVoice;
+  /**
+   * @minimum 0.5
+   * @maximum 2
+   */
+  videoRate: number;
+  /**
+   * @minimum 0.75
+   * @maximum 1.5
+   */
+  audioSpeed: number;
+  /**
+   * @minimum -5
+   * @maximum 5
+   */
+  manualOffset: number;
+  /**
+   * @minimum 15
+   * @maximum 55
+   */
+  maxSegmentSeconds: number;
+}
+
+export type CreateOpenAiDubbingJobResponseStatus =
+  (typeof CreateOpenAiDubbingJobResponseStatus)[keyof typeof CreateOpenAiDubbingJobResponseStatus];
+
+export const CreateOpenAiDubbingJobResponseStatus = {
+  pending: "pending",
+} as const;
+
+export interface CreateOpenAiDubbingJobResponse {
+  jobId: string;
+  segmentId: string;
+  status: CreateOpenAiDubbingJobResponseStatus;
+  startTime: number;
+}
+
+export interface OpenAiSpeechTiming {
+  utteranceId: string;
+  startTime: number;
+  endTime: number;
+  originalText: string;
+  arabicText: string;
+}
+
+export type OpenAiDubbingJobStatus =
+  (typeof OpenAiDubbingJobStatus)[keyof typeof OpenAiDubbingJobStatus];
+
+export const OpenAiDubbingJobStatus = {
+  pending: "pending",
+  processing: "processing",
+  completed: "completed",
+  failed: "failed",
+  cancelled: "cancelled",
+} as const;
+
+export type OpenAiDubbingJobSynchronizationData = { [key: string]: unknown };
+
+export interface OpenAiDubbingJob {
+  jobId: string;
+  segmentId: string;
+  status: OpenAiDubbingJobStatus;
+  progress: string;
+  startTime: number;
+  endTime?: number | null;
+  originalText?: string | null;
+  arabicText?: string | null;
+  preparedText?: string | null;
+  speechTimings: OpenAiSpeechTiming[];
+  synchronizationData: OpenAiDubbingJobSynchronizationData;
+  audioUrl?: string | null;
+  audioDuration?: number | null;
+  videoRate: number;
+  audioSpeed: number;
+  error?: string | null;
+}
+
+export type CancelOpenAiDubbingJobResponseStatus =
+  (typeof CancelOpenAiDubbingJobResponseStatus)[keyof typeof CancelOpenAiDubbingJobResponseStatus];
+
+export const CancelOpenAiDubbingJobResponseStatus = {
+  cancelled: "cancelled",
+} as const;
+
+export interface CancelOpenAiDubbingJobResponse {
+  jobId: string;
+  status: CancelOpenAiDubbingJobResponseStatus;
+}
+
+export type PreviewOpenAiDubbingVoiceRequestVoice =
+  (typeof PreviewOpenAiDubbingVoiceRequestVoice)[keyof typeof PreviewOpenAiDubbingVoiceRequestVoice];
+
+export const PreviewOpenAiDubbingVoiceRequestVoice = {
+  alloy: "alloy",
+  echo: "echo",
+  fable: "fable",
+  onyx: "onyx",
+  nova: "nova",
+  shimmer: "shimmer",
+} as const;
+
+export interface PreviewOpenAiDubbingVoiceRequest {
+  voice: PreviewOpenAiDubbingVoiceRequestVoice;
+  /** @maxLength 500 */
+  text?: string;
+}
+
+export interface UploadOpenAiDubbingMediaResponse {
+  mediaId: string;
+  sourceUrl: string;
+  contentType: string;
+  size: number;
+}
+
+export type UploadOpenAiDubbingMediaParams = {
+  filename: string;
+};

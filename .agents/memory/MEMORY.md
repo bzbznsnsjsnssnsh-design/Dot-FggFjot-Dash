@@ -2,3 +2,4 @@
 - [yt-dlp on GCP IPs](ytdlp-gcp.md) — --download-sections causes 403 on GCP; must download full audio first then ffmpeg-cut locally
 - [Video Translator STT model](vt-stt-model.md) — only gpt-4o-mini-transcribe works via Replit AI Integrations (whisper-1 unsupported)
 - [YouTube CDN URL expiry](cdn-url-expiry.md) — CDN URLs contain expire= param; must parse TTL from URL, not use fixed 5h; on 5XX retry with fresh yt-dlp fetch
+- [p-retry v7 AbortError](p-retry-v7-abort-error.md) — import AbortError as a named export; pRetry.AbortError is not available in v7

@@ -71,8 +71,166 @@ export const GetTtsModelsResponse = zod.object({
           id: zod.string(),
           name: zod.string(),
           gender: zod.string(),
+          locale: zod
+            .string()
+            .describe("Language\/locale code for grouping voices"),
         }),
       ),
     }),
   ),
+});
+
+/**
+ * @summary Get supported OpenAI dubbing models and voices
+ */
+export const GetOpenAiDubbingOptionsResponse = zod.object({
+  sttModels: zod.array(
+    zod.object({
+      id: zod.string(),
+      name: zod.string(),
+    }),
+  ),
+  textModels: zod.array(
+    zod.object({
+      id: zod.string(),
+      name: zod.string(),
+    }),
+  ),
+  ttsModel: zod.string(),
+  voices: zod.array(
+    zod.object({
+      id: zod.string(),
+      name: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Create an OpenAI dubbing segment job
+ */
+export const createOpenAiDubbingJobBodyStartTimeMin = 0;
+
+export const createOpenAiDubbingJobBodyVideoRateMin = 0.5;
+export const createOpenAiDubbingJobBodyVideoRateMax = 2;
+
+export const createOpenAiDubbingJobBodyAudioSpeedMin = 0.75;
+export const createOpenAiDubbingJobBodyAudioSpeedMax = 1.5;
+
+export const createOpenAiDubbingJobBodyManualOffsetMin = -5;
+export const createOpenAiDubbingJobBodyManualOffsetMax = 5;
+
+export const createOpenAiDubbingJobBodyMaxSegmentSecondsMin = 15;
+export const createOpenAiDubbingJobBodyMaxSegmentSecondsMax = 55;
+
+export const CreateOpenAiDubbingJobBody = zod.object({
+  sourceUrl: zod.string(),
+  startTime: zod.number().min(createOpenAiDubbingJobBodyStartTimeMin),
+  sttModel: zod.enum(["gpt-4o-mini-transcribe"]),
+  translationModel: zod.string(),
+  preparationModel: zod.string(),
+  analysisModel: zod.string(),
+  voice: zod.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]),
+  videoRate: zod
+    .number()
+    .min(createOpenAiDubbingJobBodyVideoRateMin)
+    .max(createOpenAiDubbingJobBodyVideoRateMax),
+  audioSpeed: zod
+    .number()
+    .min(createOpenAiDubbingJobBodyAudioSpeedMin)
+    .max(createOpenAiDubbingJobBodyAudioSpeedMax),
+  manualOffset: zod
+    .number()
+    .min(createOpenAiDubbingJobBodyManualOffsetMin)
+    .max(createOpenAiDubbingJobBodyManualOffsetMax),
+  maxSegmentSeconds: zod
+    .number()
+    .min(createOpenAiDubbingJobBodyMaxSegmentSecondsMin)
+    .max(createOpenAiDubbingJobBodyMaxSegmentSecondsMax),
+});
+
+/**
+ * @summary Get OpenAI dubbing job and segment data
+ */
+export const GetOpenAiDubbingJobParams = zod.object({
+  jobId: zod.coerce.string(),
+});
+
+export const GetOpenAiDubbingJobResponse = zod.object({
+  jobId: zod.string(),
+  segmentId: zod.string(),
+  status: zod.enum([
+    "pending",
+    "processing",
+    "completed",
+    "failed",
+    "cancelled",
+  ]),
+  progress: zod.string(),
+  startTime: zod.number(),
+  endTime: zod.number().nullish(),
+  originalText: zod.string().nullish(),
+  arabicText: zod.string().nullish(),
+  preparedText: zod.string().nullish(),
+  speechTimings: zod.array(
+    zod.object({
+      utteranceId: zod.string(),
+      startTime: zod.number(),
+      endTime: zod.number(),
+      originalText: zod.string(),
+      arabicText: zod.string(),
+    }),
+  ),
+  synchronizationData: zod.record(zod.string(), zod.unknown()),
+  audioUrl: zod.string().nullish(),
+  audioDuration: zod.number().nullish(),
+  videoRate: zod.number(),
+  audioSpeed: zod.number(),
+  error: zod.string().nullish(),
+});
+
+/**
+ * @summary Cancel a pending or running OpenAI dubbing job
+ */
+export const CancelOpenAiDubbingJobParams = zod.object({
+  jobId: zod.coerce.string(),
+});
+
+export const CancelOpenAiDubbingJobResponse = zod.object({
+  jobId: zod.string(),
+  status: zod.enum(["cancelled"]),
+});
+
+/**
+ * @summary Stream synthesized OpenAI dubbing audio
+ */
+export const GetOpenAiDubbingAudioParams = zod.object({
+  jobId: zod.coerce.string(),
+});
+
+/**
+ * @summary Generate an OpenAI TTS voice preview
+ */
+export const previewOpenAiDubbingVoiceBodyTextMax = 500;
+
+export const PreviewOpenAiDubbingVoiceBody = zod.object({
+  voice: zod.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]),
+  text: zod.string().max(previewOpenAiDubbingVoiceBodyTextMax).optional(),
+});
+
+/**
+ * @summary Upload a video to persistent private media storage
+ */
+export const UploadOpenAiDubbingMediaQueryParams = zod.object({
+  filename: zod.coerce.string(),
+});
+
+/**
+ * @summary Stream uploaded video with byte-range support
+ */
+export const GetOpenAiDubbingMediaParams = zod.object({
+  mediaId: zod.coerce.string(),
+});
+
+export const GetOpenAiDubbingMediaHeader = zod.object({
+  Range: zod.string().optional(),
 });
