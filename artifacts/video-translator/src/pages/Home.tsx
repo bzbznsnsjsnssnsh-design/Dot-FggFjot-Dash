@@ -6,7 +6,11 @@ import { Play, Youtube, Settings, Wand2, RefreshCcw, ChevronLeft, ChevronRight, 
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { useToast } from '@/hooks/use-toast';
-import { useGetTtsModels } from '@workspace/api-client-react';
+import {
+  useGetOpenAiDubbingOptions,
+  useGetTtsModels,
+  usePreviewOpenAiDubbingVoice,
+} from '@workspace/api-client-react';
 import { useYoutubeUrl } from '@/hooks/use-youtube-url';
 import { ProcessingOverlay } from '@/components/processing-overlay';
 import { PipelineBar } from '@/components/pipeline-bar';
@@ -113,6 +117,10 @@ export default function Home() {
   const [mediaProbe, setMediaProbe] = useState<MediaProbe | null>(null);
   const [mediaProbeLoading, setMediaProbeLoading] = useState(false);
   const [mediaError, setMediaError] = useState('');
+  const [openAiVoice, setOpenAiVoice] = useState('');
+  const [openAiPreviewText, setOpenAiPreviewText] = useState('مرحباً بكم في هذا المقطع. هذه معاينة لصوت الدبلجة.');
+  const [openAiPreviewUrl, setOpenAiPreviewUrl] = useState('');
+  const [openAiPreviewError, setOpenAiPreviewError] = useState('');
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
@@ -133,6 +141,8 @@ export default function Home() {
   const chainAbortRef = useRef<AbortController | null>(null);
 
   const { data: modelsData, isLoading: isLoadingModels } = useGetTtsModels();
+  const { data: openAiOptions, isLoading: isLoadingOpenAiOptions } = useGetOpenAiDubbingOptions();
+  const previewOpenAiVoice = usePreviewOpenAiDubbingVoice();
 
   const normalizeStart = (t: number) => Math.floor(t / SEGMENT_DURATION) * SEGMENT_DURATION;
   const isYouTubeSource = !!videoId;
@@ -192,6 +202,18 @@ export default function Home() {
       }
     }
   }, [selectedModel, modelsData, selectedVoice]);
+
+  useEffect(() => {
+    if (openAiOptions?.voices?.length && !openAiVoice) {
+      setOpenAiVoice(openAiOptions.voices[0].id);
+    }
+  }, [openAiOptions, openAiVoice]);
+
+  useEffect(() => {
+    return () => {
+      if (openAiPreviewUrl) URL.revokeObjectURL(openAiPreviewUrl);
+    };
+  }, [openAiPreviewUrl]);
 
   // Reset everything when URL changes
   useEffect(() => {
@@ -834,6 +856,26 @@ export default function Home() {
     });
   };
 
+  const handleOpenAiPreview = () => {
+    if (!openAiVoice) return;
+    setOpenAiPreviewError('');
+    previewOpenAiVoice.mutate(
+      {
+        data: {
+          voice: openAiVoice as 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer',
+          text: openAiPreviewText.trim(),
+        },
+      },
+      {
+        onSuccess: (audio) => {
+          if (openAiPreviewUrl) URL.revokeObjectURL(openAiPreviewUrl);
+          setOpenAiPreviewUrl(URL.createObjectURL(audio));
+        },
+        onError: () => setOpenAiPreviewError('تعذر إنشاء معاينة صوت OpenAI.'),
+      },
+    );
+  };
+
   const allVoices = useMemo(() => {
     const voices: { id: string; name: string; gender: string; locale: string }[] = [];
     for (const m of modelsData?.models ?? []) {
@@ -883,14 +925,6 @@ export default function Home() {
           <p className="text-muted-foreground text-sm">
             دبلجة فيديوهات يوتيوب إلى العربية بالذكاء الاصطناعي — مجاناً
           </p>
-          <a
-            href="/openai-dubbing"
-            data-testid="link-openai-dubbing"
-            className="mt-4 inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/20"
-          >
-            <Sparkles className="h-4 w-4" />
-            مساحة الدبلجة العربية
-          </a>
         </motion.div>
 
         {/* URL input */}
@@ -1005,6 +1039,53 @@ export default function Home() {
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div className="mb-5 rounded-xl border border-primary/20 bg-primary/5 p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    <div>
+                      <h4 className="text-sm font-semibold text-foreground">أصوات OpenAI</h4>
+                      <p className="text-[11px] text-muted-foreground">معاينة الصوت من داخل قسم الدبلجة الحالي</p>
+                    </div>
+                  </div>
+                  <label className="text-xs text-muted-foreground font-medium block mb-1.5">الصوت العربي</label>
+                  <Select
+                    value={openAiVoice}
+                    onValueChange={setOpenAiVoice}
+                    disabled={isLoadingOpenAiOptions || showOverlay}
+                  >
+                    <SelectTrigger className="bg-background/50 border-border/50">
+                      <SelectValue placeholder="اختر صوت OpenAI..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {openAiOptions?.voices.map(voice => (
+                        <SelectItem key={voice.id} value={voice.id}>{voice.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <textarea
+                    value={openAiPreviewText}
+                    onChange={event => setOpenAiPreviewText(event.target.value.slice(0, 500))}
+                    rows={2}
+                    placeholder="اكتب نص المعاينة..."
+                    className="mt-3 w-full resize-none rounded-md border border-border/50 bg-background/50 px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-primary/40"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleOpenAiPreview}
+                    disabled={!openAiVoice || previewOpenAiVoice.isPending || showOverlay}
+                    className="mt-3 w-full"
+                  >
+                    {previewOpenAiVoice.isPending ? 'جاري إنشاء المعاينة...' : 'استمع إلى معاينة الصوت'}
+                  </Button>
+                  {openAiPreviewUrl && (
+                    <audio controls src={openAiPreviewUrl} className="mt-3 w-full" />
+                  )}
+                  {openAiPreviewError && (
+                    <p className="mt-2 text-xs text-destructive">{openAiPreviewError}</p>
+                  )}
                 </div>
 
                 {/* Voice picker */}
